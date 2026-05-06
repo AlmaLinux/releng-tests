@@ -1,0 +1,4 @@
+# Packages that we EXPECT to fail to install (e.g. mutual conflicts).
+# The starter list is empty; it gets filled in as real cases surface in the first runs.
+allowed:
+  # - some-conflicting-debug-pkg     # reason: conflicts with some-pkg

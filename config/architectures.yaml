@@ -1,0 +1,115 @@
+# Architecture matrix.
+#
+# Required field for every arch:
+#   docker_platform — value passed to ``docker run --platform=<…>``.
+#
+# Optional fields (defaults documented per field; absent ⇒ default):
+#   supported_majors      — list of AlmaLinux majors this arch is published
+#                           for (default: ["9", "10"]). Tests that
+#                           parametrize over ``arch`` are skipped when
+#                           runtime_config.version's major is not in this
+#                           list. Lets us keep ``x86_64_v2`` enabled only
+#                           for AL10 without having to special-case it
+#                           in test code.
+#
+#   pungi_host            — hostname segment of the pungi mirror (only
+#                           overridden where it differs from the arch
+#                           name; for x86_64 it is ``x86-64``).
+#
+#   docker_image          — template for the container image used by the
+#                           dnf-install / upgrade / os-release tests.
+#                           Supports the placeholder ``{major}`` (the
+#                           AlmaLinux major from runtime_config.version).
+#                           Default: ``almalinux:{major}`` (i.e. the
+#                           Docker Hub stock image). Override only when
+#                           the arch needs a different registry/tag —
+#                           e.g. ``x86_64_v2`` is published only as
+#                           ``quay.io/almalinuxorg/almalinux:{major}``
+#                           and not on Docker Hub.
+#
+#   skip_categories       — list of test categories to skip for this arch
+#                           (default: []). Recognised values:
+#                             "container" — anything tagged
+#                                           ``pytest.mark.requires_docker``
+#                                           (dnf install, dnf upgrade,
+#                                           os-release inside a container).
+#                             "iso"       — ISO checksum / reachability
+#                                           tests (test_iso_checksums.py).
+#                             "upgrade"   — dnf-upgrade test alone (a
+#                                           subset of "container").
+#                           Parity tests (test_release_parity,
+#                           test_noarch_parity) intentionally do NOT
+#                           honour skip_categories — every published
+#                           arch must satisfy parity, otherwise it is
+#                           a real release bug (e.g. an i686 rebuild
+#                           that bumped a noarch's release while the
+#                           rest of the matrix stayed put).
+#                           Used by tests/conftest.py to gracefully skip
+#                           tests that don't apply to an arch (i686 has
+#                           no container image and no ISOs published).
+#
+#   vault_only_mirrorlist — true if the public mirrorlist for this arch
+#                           returns a single ``vault.almalinux.org`` URL
+#                           with no community-mirror fan-out (default:
+#                           false). i686 lives only on vault, just like
+#                           beta — the mirrorlist contract is "≥1 URL
+#                           that resolves", not "≥2 of 3 community
+#                           mirrors". Consulted by test_mirrorlist.py.
+#
+#   stable_repo_base_url  — full URL prefix for the stable repo,
+#                           up to (but not including) the version
+#                           segment (default:
+#                           ``https://repo.almalinux.org/almalinux``).
+#                           i686 is never published on
+#                           ``repo.almalinux.org`` — its stable repos
+#                           live exclusively on ``vault.almalinux.org``,
+#                           which uses a different path layout
+#                           (no ``/almalinux`` prefix:
+#                           ``https://vault.almalinux.org/9.5/BaseOS/i686/os``,
+#                           not ``…/almalinux/9.5/…``). Set this whole
+#                           prefix here so the URL builder doesn't have
+#                           to special-case vault layout in code.
+
+x86_64:
+  docker_platform: linux/amd64
+  pungi_host: x86-64
+  supported_majors: ["9", "10"]
+
+aarch64:
+  docker_platform: linux/arm64
+  supported_majors: ["9", "10"]
+
+s390x:
+  docker_platform: linux/s390x
+  supported_majors: ["9", "10"]
+
+ppc64le:
+  docker_platform: linux/ppc64le
+  supported_majors: ["9", "10"]
+
+# i686 ships only as a chroot/yum repo set — no container image, no
+# installation media. AlmaLinux's mirrorlist for i686 is vault-only.
+i686:
+  docker_platform: linux/386
+  supported_majors: ["9", "10"]
+  vault_only_mirrorlist: true
+  # i686 stable repos are not on repo.almalinux.org — they ship straight
+  # to vault.almalinux.org, which uses a flatter path layout (no
+  # /almalinux/ prefix). Without this override RepoURL would 404 for
+  # every i686 stable URL and the parity test would silently skip the
+  # drift instead of catching it.
+  stable_repo_base_url: "https://vault.almalinux.org"
+  skip_categories: ["container", "iso", "upgrade"]
+
+# x86_64_v2 — the v2 micro-architecture baseline (introduced in AL10).
+# Container image is published only on quay.io, not Docker Hub, and is
+# pulled with --platform=linux/amd64/v2 (the docker_platform field
+# below). Not published for AL9.
+x86_64_v2:
+  docker_platform: linux/amd64/v2
+  docker_image: "quay.io/almalinuxorg/almalinux:{major}"
+  supported_majors: ["10"]
+  # pungi compose host uses dashes the same way x86_64 → x86-64.
+  # The path segment under the host (``/almalinux/10/x86_64_v2/...``)
+  # keeps the canonical underscore name — only the hostname changes.
+  pungi_host: x86-64-v2

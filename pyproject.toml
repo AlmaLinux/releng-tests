@@ -1,0 +1,45 @@
+[project]
+name = "post-check"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "pytest>=8.0",
+  "pytest-xdist>=3.5",
+  "requests>=2.32",
+  "requests-cache>=1.2",
+  "defusedxml>=0.7",
+  "python-gnupg>=0.5",
+  "PyYAML>=6.0",
+  "rpmfile>=2.1",
+  # AlmaLinux 10.1 ships part of the repodata (the `plus` repo) with
+  # `primary.xml.zst` — without a zstd decompressor these repos cannot be parsed.
+  "zstandard>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "types-requests",
+  "types-PyYAML",
+  "pytest-httpserver>=1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["post_check*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+# `rpmfile`, `defusedxml`, and `python-gnupg` ship no PEP-561 marker and
+# no third-party stubs on PyPI. Without these overrides mypy fails the
+# import on every run and drowns the real diagnostics in noise.
+[[tool.mypy.overrides]]
+module = ["rpmfile", "rpmfile.*", "defusedxml.*", "gnupg"]
+ignore_missing_imports = true

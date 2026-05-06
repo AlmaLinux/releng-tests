@@ -1,0 +1,225 @@
+name: Release Tests
+
+# Surface the run parameters in the run list / page title so operators
+# can tell at a glance which release a given run validated, instead of
+# having to open the job summary.
+run-name: "Release Tests · ${{ inputs.source }} ${{ inputs.version }} (${{ inputs.arches }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Source: stable | beta | pungi | pulp"
+        type: choice
+        options: [stable, beta, pungi, pulp]
+        default: pulp
+      version:
+        description: "AlmaLinux version (e.g. 10.1 for stable/beta, 10 for pungi/pulp). Must match %{version} of almalinux-release."
+        type: string
+        required: true
+      arches:
+        description: "Architecture(s) to test. ``all`` expands to the four main arches; pick a single arch to narrow the run (i686 and x86_64_v2 are not in ``all``)."
+        type: choice
+        options: [all, x86_64, aarch64, s390x, ppc64le, i686, x86_64_v2]
+        default: all
+
+permissions:
+  contents: read
+
+# Some pinned actions (e.g. actions/download-artifact@v5) still ship a
+# Node.js 20 entrypoint. GitHub forces the issue in mid-2026, but the
+# annotation already pollutes every run. Opt every job into Node 24 now
+# — the actions are tested against it upstream, and this keeps the
+# Annotations panel free for our own warnings.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  host-tests:
+    name: Host-side checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .[dev]
+
+      - name: Run host tests
+        env:
+          ALMA_SOURCE: ${{ inputs.source }}
+          ALMA_VERSION: ${{ inputs.version }}
+          # ``all`` is workflow-level shorthand for the four main arches —
+          # the test layer only knows how to read a CSV, so expand here.
+          ALMA_ARCHES: ${{ inputs.arches == 'all' && 'x86_64,aarch64,s390x,ppc64le' || inputs.arches }}
+        run: |
+          mkdir -p reports
+          pytest -m "release and not requires_docker" -v \
+            --junitxml=reports/host.xml \
+            -n auto
+
+      - name: Rename host release report
+        if: always()
+        run: |
+          # release-report-YYYYMMDD-HHMMSS.md — pick the freshest one and
+          # tag it with the job suffix so artifacts from multiple jobs
+          # don't collide on the merged path.
+          report=$(ls -t reports/release-report-*.md 2>/dev/null | head -n1 || true)
+          if [ -n "$report" ]; then
+            mv "$report" "${report%.md}-host.md"
+          fi
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: host-report
+          path: reports/
+
+  container-tests:
+    name: Container tests (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    needs: host-tests
+    # Run per-arch container tests even if host-tests reports failures.
+    # The two suites validate different layers (repo metadata / parity
+    # vs. dnf install + os-release inside a real container), so a host
+    # regression must not silence the per-arch matrix — operators need
+    # the full picture in one Summary, not "fix host, re-run, repeat".
+    # ``!cancelled()`` keeps the job from running when the workflow is
+    # cancelled by the operator (the only legitimate reason to skip).
+    if: ${{ !cancelled() }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64, s390x, ppc64le]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if arch not requested
+        id: gate
+        env:
+          # ``all`` runs every matrix arch; a single-arch input runs only
+          # the matching cell. i686/x86_64_v2 don't appear in this matrix
+          # — picking them deliberately gates every container job off, so
+          # only host-side tests cover those arches.
+          REQUESTED: ${{ inputs.arches }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          if [[ "${REQUESTED}" == "all" || "${REQUESTED}" == "${ARCH}" ]]; then
+            echo "run=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v4
+        if: steps.gate.outputs.run == '1'
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.run == '1'
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        if: steps.gate.outputs.run == '1'
+        run: pip install -e .[dev]
+
+      - name: Run container tests
+        if: steps.gate.outputs.run == '1'
+        env:
+          ALMA_SOURCE: ${{ inputs.source }}
+          ALMA_VERSION: ${{ inputs.version }}
+          ALMA_ARCHES: ${{ matrix.arch }}
+        run: |
+          mkdir -p reports
+          pytest -m "release and requires_docker" -v \
+            --junitxml=reports/${{ matrix.arch }}.xml
+
+      - name: Rename container release report
+        if: always() && steps.gate.outputs.run == '1'
+        run: |
+          # release-report-YYYYMMDD-HHMMSS.md — pick the freshest one and
+          # tag it with the arch so per-arch artifacts don't collide.
+          report=$(ls -t reports/release-report-*.md 2>/dev/null | head -n1 || true)
+          if [ -n "$report" ]; then
+            mv "$report" "${report%.md}-${{ matrix.arch }}.md"
+          fi
+
+      - uses: actions/upload-artifact@v6
+        if: always() && steps.gate.outputs.run == '1'
+        with:
+          name: container-report-${{ matrix.arch }}
+          path: reports/
+
+  summary:
+    # GitHub heads each job's step-summary block with "<job-name> summary",
+    # so a job literally called "Summary" rendered as "Summary summary"
+    # at the top of the run page. Naming it after what the job actually
+    # produces ("Release report") fixes the duplication and reads better.
+    name: Release report
+    needs: [host-tests, container-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: reports/
+      - name: Merge release reports into one
+        # Each pytest invocation (host + per-arch container) produces
+        # its own ``release-report-*.md``. Pasting them straight into
+        # the Summary tab gives five duplicate headers and five
+        # ``Summary by file`` tables — exactly the "looks weird" the
+        # operator sees today. ``merge-release-reports.py`` collapses
+        # them into one report: a single header with aggregated
+        # totals, one ``Summary by file`` table with a per-scope column
+        # so a reader can see at a glance which arch the failure came
+        # from, and the verbose per-test sections folded under one
+        # ``<details>`` per scope. GitHub still caps the file at 1 MiB,
+        # so we head-truncate gracefully if we blow the budget.
+        env:
+          SRC: ${{ inputs.source }}
+          VER: ${{ inputs.version }}
+          ARCHES: ${{ inputs.arches }}
+        run: |
+          {
+            echo "## Run parameters"
+            echo
+            echo "| Parameter | Value |"
+            echo "|---|---|"
+            echo "| Source | \`${SRC}\` |"
+            echo "| Version | \`${VER}\` |"
+            echo "| Arches | \`${ARCHES}\` |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Render the merged report to a temp file so we can measure
+          # it before appending. ``GITHUB_STEP_SUMMARY`` has a 1 MiB
+          # cap; if we'd exceed it, write the merged header + Summary
+          # table only and link to the artifacts for the verbose
+          # details. Header+table is ~5 KiB even with all four arches,
+          # so the truncation path is tiny by design.
+          merged=$(mktemp)
+          python3 scripts/merge-release-reports.py reports/ > "$merged"
+
+          budget=$((1024 * 1024 - 4096))
+          written=$(wc -c < "$GITHUB_STEP_SUMMARY")
+          size=$(wc -c < "$merged")
+          if (( written + size <= budget )); then
+            cat "$merged" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Drop everything from "## Details by scope" onward — the
+            # per-scope walkthroughs are what blow the budget; the
+            # merged header + Summary-by-file table is what operators
+            # most need on this page. Full details remain in artifacts.
+            sed '/^## Details by scope$/,$d' "$merged" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo
+              echo "## Details by scope"
+              echo
+              echo "_Per-scope detail sections omitted to stay under GitHub's 1 MiB step-summary limit. Download the per-scope artifacts for the full markdown._"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

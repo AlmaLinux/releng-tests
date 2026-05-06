@@ -1,0 +1,37 @@
+# Pulp internal-beta repo URL templates, per AlmaLinux major.
+#
+# The ``pulp`` source is a hybrid: for the named repos (BaseOS,
+# AppStream, …) it serves the regular ``stable`` URLs on
+# ``repo.almalinux.org``; on top of that we layer one extra ``.repo``
+# file pointing at the internal beta hosted on
+# ``build.almalinux.org/pulp/content/...``. Those repos are unsigned
+# (``gpgcheck=0`` for the layered sections) — that's the contract for
+# this source, not a regression.
+#
+# This file is read at runtime by :func:`post_check.config.load_sources`
+# and exposed under ``sources["pulp"]["internal_beta_urls"]``. Lives in
+# YAML rather than as a Python constant because the URLs DO vary
+# per-deployment: AL10 currently points at a personal copr
+# (``eabdullin1-almalinux10-…``) that is expected to change as the
+# release process evolves, and AL9 uses a different hosting layout
+# (``builds/AlmaLinux-9-…``). Keeping them as data lets release
+# engineers adjust without a code edit + reinstall.
+#
+# Schema (per major):
+#   main   — primary repo URL template (``{arch}`` substituted)
+#   debug  — companion debug repo (``{arch}`` substituted)
+#   source — companion source repo (NO ``{arch}`` — sources are arch-less)
+#
+# Both ``main`` and ``debug`` MUST contain the ``{arch}`` placeholder
+# so the renderer can substitute the per-run arch; ``source`` MUST NOT
+# (sources are arch-less by design — same SRPM serves every arch).
+
+"9":
+  main:   "https://build.almalinux.org/pulp/content/builds/AlmaLinux-9-beta-AlmaLinux-9-{arch}-dr/"
+  debug:  "https://build.almalinux.org/pulp/content/builds/AlmaLinux-9-beta-AlmaLinux-9-{arch}-debug-dr/"
+  source: "https://build.almalinux.org/pulp/content/builds/AlmaLinux-9-beta-AlmaLinux-9-src-dr/"
+
+"10":
+  main:   "https://build.almalinux.org/pulp/content/copr/eabdullin1-almalinux10-beta-almalinux-10-{arch}-dr/"
+  debug:  "https://build.almalinux.org/pulp/content/copr/eabdullin1-almalinux10-beta-almalinux-10-{arch}-debug-dr/"
+  source: "https://build.almalinux.org/pulp/content/copr/eabdullin1-almalinux10-beta-almalinux-10-src-dr/"
