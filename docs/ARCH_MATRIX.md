@@ -107,8 +107,13 @@ docker run --platform=linux/amd64/v2 quay.io/almalinuxorg/almalinux:10
 
 1. Add an entry under `config/architectures.yaml`. Required:
    `docker_platform`. Optional, in order of usefulness:
-   `supported_majors`, `pungi_host`, `docker_image`,
-   `skip_categories`, `vault_only_mirrorlist`.
+   `supported_majors`, `pungi_host`, `pungi_host_by_major`,
+   `docker_image`, `skip_categories`, `vault_only_mirrorlist`.
+   Use `pungi_host_by_major` instead of `pungi_host` when the pungi
+   hostname varies across AlmaLinux majors — i686 does this because
+   AL9 has no standalone i686 compose and rides under
+   `x86-64-pungi-9.almalinux.dev`, while AL10 has its own
+   `i686-pungi-10.almalinux.dev`.
 2. If the arch has a non-default expected-section set, update the
    per-major maps in `post_check/config.py::_EXPECTED_PKG_SECTIONS`
    (or the `_ARCH_*` arch-tuples consumed by them).

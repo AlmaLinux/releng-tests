@@ -197,6 +197,42 @@ def test_url_builder_pungi_iso_dir():
     )
 
 
+def test_url_builder_pungi_i686_al9_uses_x86_64_host():
+    """AL9 has no standalone i686 pungi compose — its i686 packages
+    live UNDER the x86_64 compose at
+    ``x86-64-pungi-9.almalinux.dev/almalinux/9/i686/…``. Without the
+    per-major host override the URL would resolve to
+    ``i686-pungi-9.almalinux.dev`` (which doesn't exist) and the
+    parity test would silently skip the drift.
+    """
+    u = RepoURL.from_config(
+        source="pungi", version="9", arch="i686", repo="BaseOS"
+    )
+    assert u.repo_base() == (
+        "https://x86-64-pungi-9.almalinux.dev/almalinux/9/i686/"
+        "latest_result_almalinux/compose/BaseOS/i686/os"
+    )
+    assert u.iso_dir() == (
+        "https://x86-64-pungi-9.almalinux.dev/almalinux/9/i686/"
+        "latest_result_almalinux/compose/isos/i686"
+    )
+
+
+def test_url_builder_pungi_i686_al10_uses_i686_host():
+    """AL10 introduced a dedicated i686 pungi compose at
+    ``i686-pungi-10.almalinux.dev`` — the default arch-name-as-host
+    behaviour. ``pungi_host_by_major`` deliberately has no AL10 entry
+    so the fall-through path is exercised here.
+    """
+    u = RepoURL.from_config(
+        source="pungi", version="10", arch="i686", repo="BaseOS"
+    )
+    assert u.repo_base() == (
+        "https://i686-pungi-10.almalinux.dev/almalinux/10/i686/"
+        "latest_result_almalinux/compose/BaseOS/i686/os"
+    )
+
+
 # ---------------------------------------------------------------- beta
 def test_url_builder_beta_uses_vault_with_beta_suffix():
     u = RepoURL.from_config(

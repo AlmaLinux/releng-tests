@@ -89,9 +89,24 @@ class RepoURL:
 
     def _pungi_host(self) -> str:
         """Hostname segment of the pungi mirror. For x86_64 it's
-        ``x86-64``; for the other arches it's the arch name itself."""
+        ``x86-64``; for the other arches it's the arch name itself.
+
+        Per-major override (``pungi_host_by_major``) takes precedence
+        over the plain ``pungi_host`` field. i686 needs this because
+        AL9 never got a dedicated i686 pungi compose — its i686 packages
+        live UNDER the x86_64 compose at
+        ``x86-64-pungi-9.almalinux.dev/almalinux/9/i686/…``. Starting
+        with AL10 the i686 compose got its own host
+        (``i686-pungi-10.almalinux.dev``), so the mapping has to be
+        per-major or the AL9 i686 pungi URL would 404 and parity tests
+        would silently skip the drift.
+        """
         arches = load_architectures()
-        return arches[self.arch].get("pungi_host", self.arch)
+        cfg = arches[self.arch]
+        by_major = cfg.get("pungi_host_by_major") or {}
+        if self.major() in by_major:
+            return by_major[self.major()]
+        return cfg.get("pungi_host", self.arch)
 
     def _stable_base_url(self) -> str:
         """URL prefix for the stable source, up to (but not including)

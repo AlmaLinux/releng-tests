@@ -179,6 +179,17 @@ def test_architectures_yaml_optional_extras():
         "would 404 every i686 stable URL and parity tests would silently "
         "skip the drift."
     )
+    # AL9 has no standalone i686 pungi compose — i686 packages are
+    # produced under the x86_64 compose at x86-64-pungi-9.almalinux.dev.
+    # AL10 has its own host and intentionally has no override entry, so
+    # the fall-through (arch-name-as-host) gives i686-pungi-10. Lock both
+    # halves of this contract so an accidental "AL10 too" entry surfaces
+    # as a test failure and not a 404 in a release run.
+    assert i686["pungi_host_by_major"] == {"9": "x86-64"}, (
+        "i686 pungi host must be x86-64 on AL9 (rides under the x86_64 "
+        "compose) and fall through to the default 'i686' on AL10 (its "
+        "own compose host). Any deviation here breaks parity URLs."
+    )
     cats = set(i686["skip_categories"])
     assert {"container", "iso"} <= cats, (
         "i686 must skip container and iso tests — no AlmaLinux i686 "

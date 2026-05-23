@@ -16,6 +16,23 @@
 #                           overridden where it differs from the arch
 #                           name; for x86_64 it is ``x86-64``).
 #
+#   pungi_host_by_major   — per-major override of ``pungi_host``, used
+#                           when the hostname is not constant across
+#                           AlmaLinux majors (default: {}). Lookup order
+#                           in the URL builder:
+#                             1. ``pungi_host_by_major[<major>]``
+#                             2. ``pungi_host``
+#                             3. the arch name itself
+#                           i686 needs this because AL9 has no dedicated
+#                           i686 pungi compose — its i686 packages live
+#                           UNDER the x86_64 compose at
+#                           ``x86-64-pungi-9.almalinux.dev/almalinux/9/i686/…``.
+#                           Starting with AL10 the i686 compose got its
+#                           own host (``i686-pungi-10.almalinux.dev``),
+#                           so the mapping has to be per-major or the
+#                           AL9 i686 pungi URL would 404 and parity
+#                           tests would silently skip the drift.
+#
 #   docker_image          — template for the container image used by the
 #                           dnf-install / upgrade / os-release tests.
 #                           Supports the placeholder ``{major}`` (the
@@ -99,6 +116,14 @@ i686:
   # every i686 stable URL and the parity test would silently skip the
   # drift instead of catching it.
   stable_repo_base_url: "https://vault.almalinux.org"
+  # AL9 never got a standalone i686 pungi compose: i686 packages are
+  # produced under the x86_64 compose at
+  # x86-64-pungi-9.almalinux.dev/almalinux/9/i686/…, so the host segment
+  # has to read x86-64 there. AL10 introduced a dedicated host
+  # (i686-pungi-10.almalinux.dev), which matches the default
+  # arch-name-as-host behaviour — so AL10 deliberately has no entry here.
+  pungi_host_by_major:
+    "9": x86-64
   skip_categories: ["container", "iso", "upgrade"]
 
 # x86_64_v2 — the v2 micro-architecture baseline (introduced in AL10).
