@@ -868,3 +868,376 @@ def test_noarch_parity_a_groups_arches_by_sha():
     assert "aaaaaaaaaaaa" in msg
     assert "bbbbbbbbbbbb" in msg
     assert "BaseOS/x86_64" in msg and "BaseOS/aarch64" in msg
+
+
+# ---- known_drift_b allowlist contract -----------------------------------
+#
+# The (B) allowlist (config/noarch_parity_known_drift.yaml) silences
+# specific (repo, name) pairs whose drift the release process has
+# accepted, AND only for the explicit set of arches whose lag was
+# accepted. Today every entry is ``[i686]``: AL9 i686 is stuck on a
+# Z-stream tag while the four main arches moved on, and there will be
+# no rebuild. Operationally the allowlist is the only "make red green"
+# knob the parity test exposes, so its contract has to be tight:
+#
+#  * suppression is keyed by (repo, name) AND by the set of drifting
+#    arches — listing ``ant: [i686]`` does NOT silence a future
+#    ppc64le rebuild that misses x86_64;
+#  * suppression is keyed exact (repo, name) — listing the same name
+#    in a different repo doesn't widen the silence cross-repo;
+#  * suppression applies to (B) only — (A) keeps full reach even on
+#    listed names (mirror divergence / re-publish under same NEVRA
+#    must still surface);
+#  * suppression is a post-check filter — listing a clean pair has no
+#    effect (no false-pass risk);
+#  * the headline reports the suppression count whenever real (B)
+#    failures coexist with suppressions, so a reviewer can tell
+#    "5 of 5 real" from "5 real + 60 known".
+#
+# If any of these regress, the allowlist either silences too much
+# (every future drift slides past, including arches whose drift was
+# never accepted) or too little (operator maintains the contract in
+# two places). The tests below pin each property.
+
+
+def test_noarch_parity_known_drift_b_silences_listed_arch_drift():
+    """Baseline: a real (B) drift on a listed (repo, name) where the
+    drifting arch is in the allowed set is dropped from failures_b.
+    Exactly the production use-case — AppStream/ant drifts on i686,
+    YAML accepts ``[i686]``, test passes silently.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"):  [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "aarch64"): [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "i686"):    [_pkg("ant", "1.10.9", "11.el9_5", "b" * 64)],
+    }
+    a, b = compute_noarch_parity_failures(
+        cells, known_drift_b={("AppStream", "ant"): frozenset({"i686"})}
+    )
+    assert a == [], a
+    assert b == [], (
+        "drift on an allowed arch must produce no (B) lines, "
+        "otherwise the release report still shows it as a failure"
+    )
+
+
+def test_noarch_parity_known_drift_b_fires_when_drift_extends_beyond_allowed_arches():
+    """The arch-scoped property — the whole point of listing arches
+    in the YAML. ``ant`` is allowed to lag on i686, but if a NEW
+    rebuild also misses ppc64le, the drift now extends beyond what
+    the operator accepted. Subtracting i686 leaves
+    ``{x86_64, aarch64, ppc64le, s390x}`` and they still disagree
+    (ppc64le on the old build, the rest on the new), so the test
+    fires. If this didn't fire we'd be silencing real cross-arch
+    publication skew under the cover of an accepted i686 lag.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"):  [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "aarch64"): [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "s390x"):   [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        # ppc64le drifted — NOT in the allowed set.
+        ("AppStream", "ppc64le"): [_pkg("ant", "1.10.9", "13.el9", "c" * 64)],
+        # i686 drifted — IS in the allowed set.
+        ("AppStream", "i686"):    [_pkg("ant", "1.10.9", "11.el9_5", "b" * 64)],
+    }
+    _a, b = compute_noarch_parity_failures(
+        cells, known_drift_b={("AppStream", "ant"): frozenset({"i686"})}
+    )
+    msg = "\n".join(b)
+    assert "AppStream/ant" in msg, (
+        "drift wider than the allowed arch set must still fire — "
+        "otherwise listing i686 would silently green-light ppc64le drift too"
+    )
+    # The ppc64le NVRA shows up on its own arch-cohort line.
+    assert "1.10.9-13.el9" in msg, msg
+
+
+def test_noarch_parity_known_drift_b_allowed_arches_must_include_every_drifting_arch():
+    """Symmetric to the previous test, expressed as a unit case: the
+    YAML lists ``[i686]`` but the actual drift is between three
+    cohorts (main / i686 / ppc64le). Suppression requires every
+    drifting arch to be in the allowed set; partial coverage is not
+    enough. Pins the "subtract-and-recheck" semantic rather than a
+    looser "any allowed arch present" rule.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"):  [_pkg("foo", "2.0", "1.el9", "a" * 64)],
+        ("AppStream", "aarch64"): [_pkg("foo", "2.0", "1.el9", "a" * 64)],
+        ("AppStream", "ppc64le"): [_pkg("foo", "1.5", "1.el9", "c" * 64)],  # new drift
+        ("AppStream", "i686"):    [_pkg("foo", "1.0", "1.el9_5", "b" * 64)],
+    }
+    _a, b = compute_noarch_parity_failures(
+        cells, known_drift_b={("AppStream", "foo"): frozenset({"i686"})}
+    )
+    assert b, (
+        "ppc64le drift on top of the allowed i686 drift must still fire"
+    )
+
+
+def test_noarch_parity_known_drift_b_suppresses_when_every_drifting_arch_is_allowed():
+    """Multi-arch acceptance: the YAML lists both i686 and ppc64le as
+    allowed laggards; both actually drift; the four other arches
+    agree. After subtracting both allowed arches the remaining
+    arches are in parity, so the test silences. This validates that
+    the allowed set can carry more than one arch when needed (a
+    future scenario; today only i686 is listed in the shipped YAML).
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"):  [_pkg("foo", "2.0", "1.el9", "a" * 64)],
+        ("AppStream", "aarch64"): [_pkg("foo", "2.0", "1.el9", "a" * 64)],
+        ("AppStream", "s390x"):   [_pkg("foo", "2.0", "1.el9", "a" * 64)],
+        ("AppStream", "ppc64le"): [_pkg("foo", "1.5", "1.el9", "c" * 64)],
+        ("AppStream", "i686"):    [_pkg("foo", "1.0", "1.el9_5", "b" * 64)],
+    }
+    _a, b = compute_noarch_parity_failures(
+        cells,
+        known_drift_b={("AppStream", "foo"): frozenset({"i686", "ppc64le"})},
+    )
+    assert b == [], (
+        "when every drifting arch is in the allowed set the test "
+        "must silence — that's the multi-arch acceptance case"
+    )
+
+
+def test_noarch_parity_known_drift_b_does_not_widen_to_other_repos():
+    """Suppression is keyed by (repo, name) exactly. Listing
+    ``AppStream/cockpit-doc`` must NOT silence the same drift in
+    ``BaseOS/cockpit-doc`` — those are independent release channels.
+    Without this property a single YAML entry could mask drift in any
+    repo, defeating the per-repo scope the parity test enforces.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    # Same name drifts in BOTH repos. Allowlist only the AppStream half.
+    cells = {
+        ("AppStream", "x86_64"): [_pkg("cockpit-doc", "356", "1.el9", "a" * 64)],
+        ("AppStream", "i686"):   [_pkg("cockpit-doc", "311.2", "1.el9_4", "b" * 64)],
+        ("BaseOS", "x86_64"):    [_pkg("cockpit-doc", "356", "1.el9", "c" * 64)],
+        ("BaseOS", "i686"):      [_pkg("cockpit-doc", "311.2", "1.el9_4", "d" * 64)],
+    }
+    _a, b = compute_noarch_parity_failures(
+        cells,
+        known_drift_b={("AppStream", "cockpit-doc"): frozenset({"i686"})},
+    )
+    msg = "\n".join(b)
+    # BaseOS half survives; AppStream half silenced. The new
+    # single-package format places the surviving pair in a
+    # ``BaseOS/cockpit-doc`` header line.
+    assert "BaseOS/cockpit-doc" in msg, msg
+    assert "AppStream/cockpit-doc" not in msg, msg
+
+
+def test_noarch_parity_known_drift_b_does_not_affect_invariant_a():
+    """(A) — same NEVRA carries different sha256 across arches — must
+    keep firing on listed names regardless of the allowed-arches set.
+    This is the load-bearing safety net: if a mirror serves a
+    tampered/re-published noarch under a NEVRA we've allow-listed for
+    (B), the (A) signal is the only thing that catches it. Silencing
+    (A) by accident would turn the allowlist into a security
+    regression vector.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"): [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "i686"):   [_pkg("ant", "1.10.9", "15.el9", "b" * 64)],
+    }
+    a, _b = compute_noarch_parity_failures(
+        cells, known_drift_b={("AppStream", "ant"): frozenset({"i686"})}
+    )
+    assert a, "(A) must still fire on same-NEVRA / different-sha even for allowlisted names"
+    assert "ant-1.10.9-15.el9.noarch" in "\n".join(a)
+
+
+def test_noarch_parity_known_drift_b_listing_clean_pair_is_noop():
+    """Listing a (repo, name) that is NOT actually drifting does
+    nothing — no false pass, no spurious headline. The suppression
+    runs AFTER parity is computed, so the allowlist can only mask
+    real failures, never invent passing tests. Editing the YAML
+    therefore can't accidentally green a test by typo.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    # foo is fully in parity. Listing it should change nothing.
+    pkg = _pkg("foo", "1.0", "1.el10", "a" * 64)
+    cells = {
+        ("BaseOS", "x86_64"):  [pkg],
+        ("BaseOS", "aarch64"): [pkg],
+    }
+    a, b = compute_noarch_parity_failures(
+        cells, known_drift_b={("BaseOS", "foo"): frozenset({"i686"})}
+    )
+    assert a == [] and b == []
+
+
+def test_noarch_parity_known_drift_b_reports_suppression_count_in_headline():
+    """When (B) has BOTH residual real failures AND silenced ones, the
+    headline must surface the suppression count so a reviewer can tell
+    a regression ("0 known + 1 real") from churn within the allowlist
+    ("60 known + 1 new ant subpackage"). Without this signal the
+    "n of N failed" line under-reports the work the allowlist did.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        # Two binaries in the same (repo, arch) cell:
+        #   ``ant`` — listed in the allowlist for i686, expected silenced.
+        #   ``newpkg`` — NOT listed, expected to fire as a fresh drift.
+        ("AppStream", "x86_64"): [
+            _pkg("ant", "1.10.9", "15.el9", "a" * 64),
+            _pkg("newpkg", "2.0", "1.el9", "c" * 64),
+        ],
+        ("AppStream", "i686"): [
+            _pkg("ant", "1.10.9", "11.el9_5", "b" * 64),
+            _pkg("newpkg", "1.0", "1.el9_5", "d" * 64),
+        ],
+    }
+    _a, b = compute_noarch_parity_failures(
+        cells, known_drift_b={("AppStream", "ant"): frozenset({"i686"})}
+    )
+    msg = "\n".join(b)
+    # Headline mentions the suppression count.
+    assert "suppressed by known-drift allowlist" in msg, msg
+    assert "1 suppressed" in msg, msg
+    # The real failure (newpkg) is still surfaced; ant is not.
+    assert "AppStream/newpkg" in msg, msg
+    assert "AppStream/ant" not in msg, msg
+
+
+def test_noarch_parity_known_drift_b_default_none_means_no_suppression():
+    """The ``known_drift_b`` parameter defaults to ``None`` so test
+    cases that don't care about the allowlist (the majority of
+    meta-tests) keep working unchanged. If the default ever
+    accidentally became ``load_noarch_parity_known_drift()``, the
+    unit tests would silently inherit the YAML and a typo in the
+    test data could land on a real allow-listed pair without anyone
+    noticing.
+    """
+    from tests.release.test_noarch_parity import compute_noarch_parity_failures
+
+    cells = {
+        ("AppStream", "x86_64"): [_pkg("ant", "1.10.9", "15.el9", "a" * 64)],
+        ("AppStream", "i686"):   [_pkg("ant", "1.10.9", "11.el9_5", "b" * 64)],
+    }
+    # No known_drift_b passed → default (None) → (B) must fire even on
+    # the name AppStream/ant which is in the shipped YAML.
+    _a, b = compute_noarch_parity_failures(cells)
+    assert b, "default known_drift_b must be empty; (B) must fire on ant"
+    assert "AppStream/ant" in "\n".join(b)
+
+
+# ---- known-drift loader contract ----------------------------------------
+
+
+def test_load_noarch_parity_known_drift_parses_yaml_into_pair_arch_map():
+    """The shipped YAML loads into a non-empty
+    ``dict[(repo, name), frozenset[arches]]`` and covers the four
+    repos in scope (AppStream, BaseOS, CRB, extras). Pins the
+    loader+schema together so an accidental rename of the top-level
+    key or a switch in shape is caught here, not deep in a release
+    run.
+    """
+    from post_check.config import load_noarch_parity_known_drift
+
+    pairs = load_noarch_parity_known_drift()
+    assert isinstance(pairs, dict)
+    assert pairs, "shipped YAML is non-empty"
+    # Every entry is a (repo, name) -> non-empty frozenset[str] mapping.
+    for (repo, name), arches in pairs.items():
+        assert isinstance(repo, str) and repo
+        assert isinstance(name, str) and name
+        assert isinstance(arches, frozenset) and arches, (
+            f"{(repo, name)!r}: arches must be a non-empty frozenset, "
+            f"got {arches!r}"
+        )
+        for a in arches:
+            assert isinstance(a, str) and a
+    # Spot-check the four repos we know to be present from the
+    # user-reported drift list — and that the arch is i686 as
+    # documented in the YAML.
+    assert pairs[("AppStream", "ant")] == frozenset({"i686"})
+    assert pairs[("BaseOS", "cockpit-doc")] == frozenset({"i686"})
+    assert pairs[("CRB", "xmvn-core")] == frozenset({"i686"})
+    assert pairs[("extras", "centos-release-messaging")] == frozenset({"i686"})
+
+
+def test_load_noarch_parity_known_drift_rejects_bad_shape(tmp_path, monkeypatch):
+    """A malformed YAML must raise at load time, not silently produce
+    an empty dict. An empty dict would silently re-enable every
+    previously-accepted drift on the next release run — the operator
+    would see a wall of failures and might miss that the cause is
+    "the YAML stopped parsing", not "60 new regressions".
+    """
+    import post_check.config as cfg
+
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
+        "known_drift: 'not a mapping at all'\n"
+    )
+    with pytest.raises(ValueError, match="must be a mapping"):
+        cfg.load_noarch_parity_known_drift()
+
+
+def test_load_noarch_parity_known_drift_rejects_old_list_shape(tmp_path, monkeypatch):
+    """The previous shipped shape was ``repo: [name, name, ...]`` with
+    no arches per entry. That shape is no longer supported — every
+    entry must spell out the arches whose drift is accepted. The
+    loader must reject the old list-of-strings form with a clear
+    error rather than silently treating it as "any arch", which
+    would re-introduce the very pre-arch-scoped bug this rewrite
+    fixes.
+    """
+    import post_check.config as cfg
+
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
+        "known_drift:\n"
+        "  AppStream:\n"
+        "    - ant\n"
+        "    - slf4j\n"
+    )
+    with pytest.raises(ValueError, match="must be a mapping"):
+        cfg.load_noarch_parity_known_drift()
+
+
+def test_load_noarch_parity_known_drift_rejects_empty_arches_list(tmp_path, monkeypatch):
+    """An empty arches list (``name: []``) is a schema error, not
+    "no arch allowed" — there's no useful semantic for it, and
+    accepting it would let an operator add an entry that suppresses
+    nothing while pretending to. Raising at load time forces them
+    to either list the arch(es) or remove the entry.
+    """
+    import post_check.config as cfg
+
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
+        "known_drift:\n"
+        "  AppStream:\n"
+        "    ant: []\n"
+    )
+    with pytest.raises(ValueError, match="non-empty list of arches"):
+        cfg.load_noarch_parity_known_drift()
+
+
+def test_load_noarch_parity_known_drift_missing_file_returns_empty(tmp_path, monkeypatch):
+    """When the YAML file is absent the loader returns an empty dict
+    rather than raising — keeps the parity test functional in
+    environments where no drift has been accepted yet (e.g. a fresh
+    AL10 GA where the parity matrix is clean).
+    """
+    import post_check.config as cfg
+
+    # Point ROOT at a directory that has no config/ subtree.
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    assert cfg.load_noarch_parity_known_drift() == {}

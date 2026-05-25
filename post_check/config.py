@@ -260,6 +260,79 @@ def load_architectures() -> dict[str, Any]:
     return yaml.safe_load((ROOT / "config" / "architectures.yaml").read_text())
 
 
+def load_noarch_parity_known_drift() -> dict[tuple[str, str], frozenset[str]]:
+    """Read ``config/noarch_parity_known_drift.yaml`` into a map of
+    ``(repo, name) -> {allowed arches}`` that ``test_noarch_parity``
+    invariant (B) consults when deciding whether a flagged drift is an
+    accepted one.
+
+    Shape rationale
+    ---------------
+    The arches list is a **required** part of each entry, not an
+    optional default. The release process has accepted drift only on
+    specific arches (i686 today); listing the arch explicitly is what
+    keeps the parity test catching drift on *other* arches. The
+    consumer interprets the set as "subtract these arches from the
+    cell, re-check parity on what remains" (see
+    ``compute_noarch_parity_failures``), so listing ``[i686]`` does
+    not silence a later ppc64le rebuild that misses x86_64.
+
+    Returns an empty dict when the file is absent — keeping the
+    parity test functional in environments where no drift has been
+    accepted (a fresh AL10 release, say). Schema errors (a non-list
+    arches value, a non-string entry, an empty arches list) raise
+    ``ValueError`` at load time rather than silently degrading to
+    "all drift accepted" — the latter would turn the next release
+    run green by accident.
+    """
+    path = ROOT / "config" / "noarch_parity_known_drift.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    raw = data.get("known_drift") or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{path.name}: top-level 'known_drift' must be a mapping "
+            f"of repo -> {{name: [arch, ...]}}, got {type(raw).__name__}"
+        )
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for repo, names in raw.items():
+        if names is None:
+            # ``RepoName:`` with no body is allowed — operators sometimes
+            # keep an empty section as a placeholder for an upcoming
+            # block. Treated as "no entries for this repo".
+            continue
+        if not isinstance(names, dict):
+            raise ValueError(
+                f"{path.name}: known_drift[{repo!r}] must be a mapping "
+                f"of name -> [arch, ...], got {type(names).__name__}. "
+                f"(The previous list-of-strings shape is no longer "
+                f"supported — each entry must specify the arches whose "
+                f"drift is accepted.)"
+            )
+        for name, arches in names.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"{path.name}: known_drift[{repo!r}] contains a "
+                    f"non-string or empty key: {name!r}"
+                )
+            if not isinstance(arches, list) or not arches:
+                raise ValueError(
+                    f"{path.name}: known_drift[{repo!r}][{name!r}] must "
+                    f"be a non-empty list of arches, got {arches!r}. "
+                    f"There is no implicit 'any arch' — list the arches "
+                    f"whose drift is accepted explicitly."
+                )
+            for a in arches:
+                if not isinstance(a, str) or not a:
+                    raise ValueError(
+                        f"{path.name}: known_drift[{repo!r}][{name!r}] "
+                        f"contains a non-string arch entry: {a!r}"
+                    )
+            out[(repo, name)] = frozenset(arches)
+    return out
+
+
 def arch_skip_categories(arch: str) -> frozenset[str]:
     """Categories of tests this arch opts out of (see architectures.yaml).
 

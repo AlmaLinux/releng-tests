@@ -1,0 +1,185 @@
+# Known noarch parity (B) drift — packages where the LATEST EVR differs
+# between arches in a repo, and the release process has accepted the
+# drift instead of rebuilding to restore parity.
+#
+# Why this file exists
+# --------------------
+# ``test_noarch_parity`` invariant (B) compares, for every (repo, name)
+# noarch package, the *latest* EVR each arch publishes. On AL9, a large
+# block of legacy AppStream/CRB/extras content (the Java stack, cockpit,
+# xmvn, oscap-anaconda-addon, …) ships at ``.el9`` on the four main
+# arches while i686 stays on an older Z-stream tag (``.el9_5``,
+# ``.el9_4``, ``.el9_1.2``). i686 is community-rebuilt and intentionally
+# does not pull every AppStream rebuild — there will be no future
+# rebuild to close the gap, but the packages still install cleanly per
+# arch. The parity test is otherwise correct and we want to keep it
+# catching every other drift class, so the choice here is a narrow,
+# explicit allowlist of ``(repo, name) -> {allowed arches}`` entries.
+#
+# Schema
+# ------
+#   known_drift:
+#     <repo>:
+#       <name>: [<arch>, <arch>, ...]    # arches allowed to lag
+#
+# The arches list is REQUIRED — there is no "any arch" wildcard. The
+# release process has already accepted the drift only for a specific
+# arch (i686 today), and listing the arch explicitly is how we keep
+# the parity test catching drift on *other* arches. A new entry
+# without an arches list is a schema error.
+#
+# Scope guarantees
+# ----------------
+# * Suppression is keyed by the exact ``(repo, name)`` pair AND the
+#   exact set of drifting arches. The rule is: subtract the listed
+#   ``allowed`` arches from the cell, then re-check parity on what
+#   remains. If the remaining arches all agree on (EVR, sha) → the
+#   drift is exactly what the operator accepted → suppress. If the
+#   remaining arches still disagree → the drift is wider than what
+#   was accepted → fire. So listing ``[i686]`` does NOT silence a
+#   later ppc64le rebuild that misses x86_64.
+# * Suppression does NOT widen to other repos. ``AppStream/cockpit-doc``
+#   here does NOT silence ``BaseOS/cockpit-doc`` — separate channels.
+# * Suppression does NOT widen to other binary names of the same SRPM.
+#   If a NEW subpackage of ``ant`` starts shipping and immediately
+#   drifts, the test fires until that name is listed.
+# * Suppression applies ONLY to invariant (B). Invariant (A) — same
+#   NEVRA carrying different sha256 bytes across arches — is a
+#   stronger signal (mirror divergence or a re-publish without a
+#   release bump) and continues to fire for every package, including
+#   the ones listed here.
+# * The list is consulted only when the (repo, name) actually drifts.
+#   An entry that no longer corresponds to a real drift is a no-op
+#   (not a failure), so the file is safe to under-prune. If you want
+#   to audit which entries are still load-bearing, diff against a
+#   fresh release run.
+#
+# How to edit
+# -----------
+# Add a new entry only after confirming the drift is intentional and
+# will not be fixed by a rebuild. The expected drift pattern today is
+# "i686 stuck on an older Z-stream tag, the four main arches on the
+# current minor" — list just ``[i686]`` for those. Anything else (e.g.
+# drift between aarch64 and x86_64) should be triaged as a real
+# release bug first and only allow-listed if a rebuild is genuinely
+# not coming.
+
+# Per-repo maps of binary noarch ``name -> [arches allowed to lag]``.
+# Repo names match the ``.repo`` section labels post-check iterates
+# over (``BaseOS``, ``AppStream``, ``CRB``, ``extras``, …) — same
+# strings as in ``_DEFAULT_REPOS`` in ``post_check/config.py``.
+known_drift:
+
+  # AppStream — the long tail of legacy Java/build-tooling noarch
+  # packages plus cockpit/awscli2/mingw-qemu-ga-win/oscap. All show
+  # the same pattern: ``.el9`` on aarch64/ppc64le/s390x/x86_64,
+  # older Z-stream on i686.
+  AppStream:
+    # SRPM `ant` — 24 subpackages, all drift together on i686.
+    ant: [i686]
+    ant-antlr: [i686]
+    ant-apache-bcel: [i686]
+    ant-apache-bsf: [i686]
+    ant-apache-oro: [i686]
+    ant-apache-regexp: [i686]
+    ant-apache-resolver: [i686]
+    ant-apache-xalan2: [i686]
+    ant-commons-logging: [i686]
+    ant-commons-net: [i686]
+    ant-javamail: [i686]
+    ant-jdepend: [i686]
+    ant-jmf: [i686]
+    ant-jsch: [i686]
+    ant-junit: [i686]
+    ant-junit5: [i686]
+    ant-lib: [i686]
+    ant-openjdk11: [i686]
+    ant-openjdk17: [i686]
+    ant-openjdk21: [i686]
+    ant-openjdk8: [i686]
+    ant-swing: [i686]
+    ant-testutil: [i686]
+    ant-xz: [i686]
+    # SRPM `slf4j` — 3 subpackages drifting together on i686.
+    jcl-over-slf4j: [i686]
+    slf4j: [i686]
+    slf4j-jdk14: [i686]
+    # SRPM `cockpit` — AppStream half (the BaseOS half is listed below).
+    cockpit-packagekit: [i686]
+    cockpit-storaged: [i686]
+    # Singleton legacy noarch packages stuck on Z-stream on i686.
+    antlr-tool: [i686]
+    apache-commons-cli: [i686]
+    apache-commons-codec: [i686]
+    apache-commons-io: [i686]
+    apache-commons-lang3: [i686]
+    apache-commons-logging: [i686]
+    apache-commons-net: [i686]
+    assertj-core: [i686]
+    atinject: [i686]
+    awscli2: [i686]
+    bcel: [i686]
+    bsf: [i686]
+    byte-buddy: [i686]
+    cdi-api: [i686]
+    cockpit-ostree: [i686]
+    google-guice: [i686]
+    guava: [i686]
+    hamcrest: [i686]
+    httpcomponents-client: [i686]
+    httpcomponents-core: [i686]
+    jakarta-activation: [i686]
+    jakarta-annotations: [i686]
+    jakarta-mail: [i686]
+    jakarta-oro: [i686]
+    jdepend: [i686]
+    jsch: [i686]
+    jsoup: [i686]
+    jsr-305: [i686]
+    junit: [i686]
+    junit5: [i686]
+    jzlib: [i686]
+    maven-resolver: [i686]
+    maven-shared-utils: [i686]
+    maven-wagon: [i686]
+    mingw-qemu-ga-win: [i686]
+    objectweb-asm: [i686]
+    opentest4j: [i686]
+    oscap-anaconda-addon: [i686]
+    plexus-cipher: [i686]
+    plexus-classworlds: [i686]
+    plexus-containers-component-annotations: [i686]
+    plexus-interpolation: [i686]
+    plexus-sec-dispatcher: [i686]
+    plexus-utils: [i686]
+    regexp: [i686]
+    sisu: [i686]
+    univocity-parsers: [i686]
+    usbguard-selinux: [i686]
+    xalan-j2: [i686]
+    xerces-j2: [i686]
+    xml-commons-apis: [i686]
+    xml-commons-resolver: [i686]
+    xz-java: [i686]
+
+  # BaseOS — the cockpit-system / cockpit-doc pair (SRPM `cockpit`).
+  BaseOS:
+    cockpit-doc: [i686]
+    cockpit-system: [i686]
+
+  # CRB — xmvn stack plus three singletons (ant-manual is part of
+  # SRPM `ant` published into CRB, byte-buddy-agent companion of
+  # byte-buddy in AppStream, plexus-containers-container-default
+  # companion of the component-annotations sibling).
+  CRB:
+    ant-manual: [i686]
+    byte-buddy-agent: [i686]
+    plexus-containers-container-default: [i686]
+    xmvn-core: [i686]
+    xmvn-minimal: [i686]
+    xmvn-mojo: [i686]
+    xmvn-tools: [i686]
+
+  # extras — CentOS-derived release-messaging metapackage.
+  extras:
+    centos-release-messaging: [i686]

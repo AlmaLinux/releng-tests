@@ -68,7 +68,12 @@ from collections.abc import Iterable
 
 import pytest
 
-from post_check.config import arch_supports_major, load_architectures, load_sources
+from post_check.config import (
+    arch_supports_major,
+    load_architectures,
+    load_noarch_parity_known_drift,
+    load_sources,
+)
 from post_check.helpers import http, repodata
 from post_check.helpers.rpm_evr import evr_cmp, evr_str
 from post_check.helpers.url_builder import RepoURL, pulp_internal_beta_repo_base
@@ -126,6 +131,7 @@ def _classify_b_cause(arch_map: dict[str, tuple[tuple[str, str, str], str, str]]
 
 def compute_noarch_parity_failures(
     cells: dict[tuple[str, str], Iterable[repodata.Package]],
+    known_drift_b: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Pure check function — fed `(repo, arch) -> [Package]`, returns
     `(failures_A, failures_B)` as lists of human-readable lines.
@@ -149,7 +155,32 @@ def compute_noarch_parity_failures(
     The legacy ``arch=evr_str`` substring (``s390x=1.1-1.el10``) is
     preserved on the per-arch lines so meta-tests grepping for it keep
     passing.
+
+    ``known_drift_b``
+    -----------------
+    Optional ``dict[(repo, name), frozenset[arches]]`` describing (B)
+    violations the operator has accepted as "won't be rebuilt", scoped
+    by arch. The suppression rule is:
+
+        subtract ``allowed_arches`` from the cell — if the remaining
+        arches all agree on (EVR, sha), the drift matches what was
+        accepted and we silence it; otherwise the drift is wider
+        than what was accepted and we fire.
+
+    So listing ``("AppStream", "ant"): {"i686"}`` silences the i686 lag
+    on AppStream/ant but DOES NOT silence a hypothetical future
+    ppc64le rebuild of ``ant`` that misses x86_64 — the remaining
+    {x86_64, aarch64, ppc64le, s390x} would still disagree after
+    removing i686, so the test fires.
+
+    The suppression applies ONLY to (B). Invariant (A) (same NEVRA,
+    different sha256) is a stronger signal (mirror divergence /
+    re-publish without bump) and is intentionally left at full
+    strength regardless of this map. Loaded from
+    ``config/noarch_parity_known_drift.yaml`` by the online test;
+    meta-tests pass it directly.
     """
+    known_drift_b = known_drift_b or {}
     # (A) NEVRA -> {(repo, arch): (sha256, sourcerpm)}
     nevra_to_cells: dict[str, dict[tuple[str, str], tuple[str, str]]] = {}
     # (B) (repo, name) -> arch -> (evr_tuple, sha256, sourcerpm)
@@ -212,6 +243,7 @@ def compute_noarch_parity_failures(
     # block instead of 20 near-identical lines.
     failures_b_raw: list[tuple[str, str, dict[str, tuple[tuple[str, str, str], str, str]]]] = []
     name_shared = 0
+    suppressed_b = 0
     for (repo, name), arch_map in per_name.items():
         if len(arch_map) < 2:
             # Name in exactly one arch — legal arch-specific noarch. Skip.
@@ -221,6 +253,31 @@ def compute_noarch_parity_failures(
         # full tuple subsumes both "same version" and "same bytes".
         distinct = {(evr, sha) for (evr, sha, _srpm) in arch_map.values()}
         if len(distinct) > 1:
+            # ``known_drift_b`` is an explicit (repo, name) -> allowed
+            # arches map (see config/noarch_parity_known_drift.yaml).
+            # We only suppress AFTER the parity comparison flagged the
+            # pair — so listing a non-drifting name in the YAML is a
+            # no-op, never a source of false-pass. (A) is untouched:
+            # a same-NEVRA / different-sha violation on an allowlisted
+            # name still fires.
+            allowed = known_drift_b.get((repo, name))
+            if allowed is not None:
+                # Subtract the allowed arches and re-check parity on
+                # what's left. If the remaining arches agree (or there
+                # are none — operator explicitly accepted every arch),
+                # the drift is exactly what was accepted → suppress.
+                # If the remaining arches still disagree, the drift
+                # extends beyond the accepted set → fire as a fresh
+                # release bug (e.g. ant suddenly drifts on ppc64le
+                # too, with only i686 in the allowlist).
+                remaining = {
+                    (e, s)
+                    for arch, (e, s, _srpm) in arch_map.items()
+                    if arch not in allowed
+                }
+                if len(remaining) <= 1:
+                    suppressed_b += 1
+                    continue
             failures_b_raw.append((repo, name, arch_map))
 
     if not failures_b_raw:
@@ -253,10 +310,20 @@ def compute_noarch_parity_failures(
     # rebuilt out-of-sync land in one block, surfaced as a parenthetical
     # ("all from SRPM <name>") in the header. The per-arch EVR
     # breakdown follows the package list.
+    #
+    # When ``known_drift_b`` silenced any pairs, surface the count in
+    # the headline so the operator can tell "5 of 7 real" from "5 of 5
+    # real with 60 accepted drifts" — important when triaging whether a
+    # new failure is a regression or a fresh entry needing the YAML.
+    suppressed_note = (
+        f" ({suppressed_b} suppressed by known-drift allowlist)"
+        if suppressed_b
+        else ""
+    )
     failures_b: list[str] = [
         f"[B] noarch parity: "
         f"{len(failures_b_raw)} of {name_shared} noarch package(s) differ "
-        f"across arches in {len(groups)} group(s)."
+        f"across arches in {len(groups)} group(s).{suppressed_note}"
     ]
     # Sort groups: by repo first, then by descending size (biggest
     # blast-radius surfaces at the top of the report).
@@ -458,7 +525,13 @@ def test_noarch_packages_identical_across_arches_across_all_repos(runtime_config
                 continue
             cells[(repo, arch)] = pkgs
 
-    failures_a, failures_b = compute_noarch_parity_failures(cells)
+    # ``known_drift_b`` is the (repo, name) allowlist of accepted (B)
+    # drifts — loaded from config so release engineers can add/remove
+    # entries without touching test code. See the YAML file's docstring
+    # for the scope guarantees (B-only, exact pair match, no SRPM
+    # widening).
+    known_drift_b = load_noarch_parity_known_drift()
+    failures_a, failures_b = compute_noarch_parity_failures(cells, known_drift_b=known_drift_b)
     blocks = []
     if failures_a:
         blocks.append("\n".join(failures_a))
