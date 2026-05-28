@@ -3,9 +3,12 @@
 Three paths, picked by source:
 
 * **stable / beta** — extract the ``.repo`` files **shipped in the
-  ``almalinux-repos`` package** and mount them as-is. The package
-  already publishes the right mirrorlist + baseurl for the release;
-  re-deriving them locally would just let the two drift.
+  ``almalinux-repos`` package**, flip the priority from
+  ``mirrorlist=`` to the commented ``# baseurl=`` (see
+  :func:`_prefer_baseurl_over_mirrorlist` — mirrorlist lags GA, the
+  canonical baseurl does not) and mount the result. The URLs come
+  from the package itself; re-deriving them locally would just let
+  the two drift.
 
 * **pungi** — synthesise minimal ``.repo`` files locally. A pungi
   compose's ``almalinux-repos`` package still references the public
@@ -38,6 +41,7 @@ in the URL because the URL templates do not use dnf placeholders.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +49,34 @@ from post_check.helpers import rpm_extractor
 
 if TYPE_CHECKING:
     from post_check.config import RuntimeConfig
+
+
+# almalinux-repos ships ``mirrorlist=`` live and ``# baseurl=`` commented
+# out as a documented fallback. For container-side tests run immediately
+# after GA we want the opposite priority: the mirrorlist service
+# (mirrors.almalinux.org + community fan-out) reflects the new release
+# with a lag — DNS, CDN cache, the generator script, and the community
+# mirrors all have to catch up — while ``repo.almalinux.org`` is updated
+# synchronously with the GA push. Pointing dnf at the canonical baseurl
+# avoids a flaky window where ``dnf upgrade`` 404s on metadata fetch
+# because the mirrorlist hasn't propagated yet.
+#
+# Anchored to whole lines so we never touch unrelated keys (e.g. a stray
+# ``mirrorlist`` substring inside a name=) or already-commented lines.
+_MIRRORLIST_LINE = re.compile(rb"(?m)^(\s*)mirrorlist\s*=")
+_COMMENTED_BASEURL_LINE = re.compile(rb"(?m)^(\s*)#\s*baseurl\s*=")
+
+
+def _prefer_baseurl_over_mirrorlist(content: bytes) -> bytes:
+    """Disable ``mirrorlist=`` and activate the commented ``# baseurl=``.
+
+    Applied only to the bind-mount path (via :func:`prepare_repo_files_dir`).
+    ``extract_repo_files`` itself is kept verbatim — ``test_mirrorlist.py``
+    relies on the package's live mirrorlist being preserved.
+    """
+    content = _MIRRORLIST_LINE.sub(rb"\1#mirrorlist=", content)
+    content = _COMMENTED_BASEURL_LINE.sub(rb"\1baseurl=", content)
+    return content
 
 
 # section_id (lowercase, as it appears in .repo files) → repo path
@@ -208,15 +240,17 @@ def prepare_repo_files_dir(
     Dispatches on ``runtime_config.source``:
 
     * ``stable`` / ``beta`` — extracts from ``rpm_bytes`` (the
-      ``almalinux-repos`` package downloaded in fixtures).
-      ``rpm_bytes`` is required.
+      ``almalinux-repos`` package downloaded in fixtures) and flips
+      ``mirrorlist=`` → ``baseurl=`` so dnf inside the container hits
+      the canonical ``repo.almalinux.org`` URL instead of the
+      mirrorlist service that lags GA.  ``rpm_bytes`` is required.
     * ``pungi`` — generates per-arch URLs locally. ``rpm_bytes`` is
       ignored even if provided (the pungi compose's package ships
       wrong URLs — see :func:`render_pungi_repo_files`).
-    * ``pulp`` — extracts from ``rpm_bytes`` (same as stable) AND
-      layers an extra unsigned ``.repo`` file on top, pointing at the
-      internal beta on ``build.almalinux.org/pulp/content``.
-      ``rpm_bytes`` is required.
+    * ``pulp`` — extracts from ``rpm_bytes`` (same as stable, same
+      mirrorlist→baseurl flip) AND layers an extra unsigned ``.repo``
+      file on top, pointing at the internal beta on
+      ``build.almalinux.org/pulp/content``.  ``rpm_bytes`` is required.
 
     Returns ``target_dir`` so the caller can bind-mount it directly.
     """
@@ -232,6 +266,15 @@ def prepare_repo_files_dir(
                 f"Pass the ``almalinux_repos_pkg_bytes`` fixture."
             )
         files = extract_repo_files(rpm_bytes)
+        # Flip mirrorlist→baseurl on the way into the bind-mount: the
+        # mirrorlist service lags GA, the canonical baseurl does not.
+        # See ``_prefer_baseurl_over_mirrorlist`` for the full rationale.
+        # Applied here (not inside extract_repo_files) so test_mirrorlist
+        # still sees the package's untouched ``mirrorlist=`` line.
+        files = {
+            name: _prefer_baseurl_over_mirrorlist(content)
+            for name, content in files.items()
+        }
         if runtime_config.source == "pulp":
             # Layer the unsigned internal-beta on top of the stable
             # package's .repo files. Distinct basename so we never

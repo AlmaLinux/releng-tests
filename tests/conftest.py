@@ -671,10 +671,16 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.slow)
 
 
+# Mirrors the real layout of an ``almalinux-repos`` ``.repo`` file: a
+# live ``mirrorlist=`` plus a commented ``# baseurl=`` that operators
+# (and the bind-mount path in ``prepare_repo_files_dir``) can flip on.
+# Keeping the body realistic means the mirrorlist→baseurl transform is
+# exercised by the same fixture every other test already uses.
 _REPO_FILE_BODY = b"""\
 [almalinux-baseos]
 name=AlmaLinux $releasever - BaseOS
-baseurl=https://repo.almalinux.org/almalinux/$releasever/BaseOS/$basearch/os/
+mirrorlist=https://mirrors.almalinux.org/mirrorlist/$releasever/baseos
+# baseurl=https://repo.almalinux.org/almalinux/$releasever/BaseOS/$basearch/os/
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-10
 gpgcheck=1
 enabled=1

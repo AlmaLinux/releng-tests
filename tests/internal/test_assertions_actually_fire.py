@@ -1241,3 +1241,242 @@ def test_load_noarch_parity_known_drift_missing_file_returns_empty(tmp_path, mon
     # Point ROOT at a directory that has no config/ subtree.
     monkeypatch.setattr(cfg, "ROOT", tmp_path)
     assert cfg.load_noarch_parity_known_drift() == {}
+
+
+# ============================================================ SRPM version consistency
+# Feed ``compute_srpm_version_inconsistencies`` synthetic Package lists
+# and prove the check fires on real publication bugs (rebuild missed
+# subpackages / stale binaries left behind) but stays silent on the
+# legal noise (modular packages, single-version cells, stripped
+# metadata). Without these, the online test could silently pass on a
+# real inconsistency and we'd never know until users reported version
+# drift between subpackages.
+
+
+def _bin_pkg(name, version, release, arch="x86_64", sourcerpm=None):
+    """Synthetic binary ``Package`` for the SRPM-consistency meta-tests.
+
+    Defaults to ``epoch="0"`` and a sourcerpm derived from the binary
+    NVR if not given (so most synthetic cells need only the binary
+    NVR spelled out). Tests that need the empty-sourcerpm or
+    cross-name-SRPM case pass ``sourcerpm`` explicitly.
+    """
+    from post_check.helpers.repodata import Package
+    if sourcerpm is None:
+        sourcerpm = f"{name}-{version}-{release}.src.rpm"
+    return Package(
+        name=name,
+        epoch="0",
+        version=version,
+        release=release,
+        arch=arch,
+        checksum_type="sha256",
+        checksum="0" * 64,
+        location=f"Packages/{name[0]}/{name}-{version}-{release}.{arch}.rpm",
+        sourcerpm=sourcerpm,
+    )
+
+
+def test_srpm_consistency_clean_release_has_no_failures():
+    """Baseline: every binary references one SRPM version → silent.
+    If this ever starts firing, the check is over-eager and every
+    release would falsely fail.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    src = "foo-1.0-1.el10.src.rpm"
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo", "1.0", "1.el10", sourcerpm=src),
+            _bin_pkg("foo-libs", "1.0", "1.el10", sourcerpm=src),
+        ],
+    }
+    assert compute_srpm_version_inconsistencies(arch_pkgs) == []
+
+
+def test_srpm_consistency_fires_when_two_srpm_versions_present_in_one_arch():
+    """The user's case from the original per-arch scripts: x86_64 has
+    a binary built from ``foo-1.0-1.src.rpm`` next to a binary built
+    from ``foo-1.0-2.src.rpm``. dnf would resolve the two subpackages
+    inconsistently — must fire.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo-bin", "1.0", "1.el10", sourcerpm="foo-1.0-1.el10.src.rpm"),
+            _bin_pkg("foo-doc", "1.0", "2.el10", sourcerpm="foo-1.0-2.el10.src.rpm"),
+        ],
+    }
+    failures = compute_srpm_version_inconsistencies(arch_pkgs)
+    msg = "\n".join(failures)
+    assert failures
+    assert "[x86_64]" in msg
+    # Both SRPM filenames surface so the operator sees which build is
+    # the laggard and which is the keeper.
+    assert "foo-1.0-1.el10.src.rpm" in msg
+    assert "foo-1.0-2.el10.src.rpm" in msg
+    # 1.0-2 must be picked as the newest (via rpmvercmp on the SRPM
+    # release tag) and 1.0-1 as the older one.
+    newest_idx = next(i for i, ln in enumerate(failures) if "Newest SRPM:" in ln)
+    older_idx = next(i for i, ln in enumerate(failures) if "Older  SRPM:" in ln)
+    assert "foo-1.0-2.el10.src.rpm" in failures[newest_idx]
+    assert "foo-1.0-1.el10.src.rpm" in failures[older_idx]
+
+
+def test_srpm_consistency_reports_older_binary_rpm_filenames():
+    """The actionable info is the **filename** of the older binary —
+    that's what the operator deletes from the repository before
+    re-running ``createrepo`` to clear the drift. Surfacing only the
+    SRPM filename wouldn't tell them which binaries to remove.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo-bin", "1.0", "1.el10", sourcerpm="foo-1.0-1.el10.src.rpm"),
+            _bin_pkg("foo-doc", "1.0", "2.el10", sourcerpm="foo-1.0-2.el10.src.rpm"),
+        ],
+    }
+    failures = compute_srpm_version_inconsistencies(arch_pkgs)
+    msg = "\n".join(failures)
+    # The 1.0-1 binary's actual filename appears under "Older SRPM".
+    assert "foo-bin-1.0-1.el10.x86_64.rpm" in msg, msg
+
+
+def test_srpm_consistency_filters_out_modular_packages():
+    """Modular RPMs (``.module`` in release) routinely carry multiple
+    coexisting versions in repodata — they're managed per stream, not
+    per release. Same rationale as
+    ``tests.release.test_noarch_parity._is_modular``: counting modular
+    drift as a parity violation would flood the report on every AL9
+    release that ships modular content.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        _is_modular,
+        compute_srpm_version_inconsistencies,
+    )
+
+    modular = _bin_pkg(
+        "perl-libs", "5.32.0", "480.module_el10.0.0+1+abc",
+        sourcerpm="perl-5.32.0-480.module_el10.0.0+1+abc.src.rpm",
+    )
+    legacy = _bin_pkg(
+        "perl-libs", "5.32.0", "1.el10",
+        sourcerpm="perl-5.32.0-1.el10.src.rpm",
+    )
+    assert _is_modular(modular)
+    assert not _is_modular(legacy)
+    # Two SRPM versions are present, but the modular one is filtered
+    # → the surviving cell holds a single SRPM version → no failure.
+    arch_pkgs = {"x86_64": [modular, legacy]}
+    assert compute_srpm_version_inconsistencies(arch_pkgs) == []
+
+
+def test_srpm_consistency_failures_are_isolated_per_arch():
+    """A drift on aarch64 must not pollute the x86_64 report (and
+    vice versa). Each arch is independently inconsistent or not —
+    same arch isolation as the original per-arch scripts.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo-bin", "1.0", "1.el10", sourcerpm="foo-1.0-1.el10.src.rpm"),
+        ],
+        "aarch64": [
+            _bin_pkg(
+                "foo-bin", "1.0", "1.el10", arch="aarch64",
+                sourcerpm="foo-1.0-1.el10.src.rpm",
+            ),
+            _bin_pkg(
+                "foo-libs", "1.0", "2.el10", arch="aarch64",
+                sourcerpm="foo-1.0-2.el10.src.rpm",
+            ),
+        ],
+    }
+    failures = compute_srpm_version_inconsistencies(arch_pkgs)
+    msg = "\n".join(failures)
+    assert "[aarch64]" in msg
+    assert "[x86_64]" not in msg
+
+
+def test_srpm_consistency_picks_newest_via_rpmvercmp_not_lexical():
+    """``1.10`` is newer than ``1.2`` numerically (rpmvercmp) but
+    older lexically. The check must order via rpmvercmp; otherwise
+    a 1.10 rebuild would be labelled as "Older SRPM" and the
+    operator would be told to delete the wrong files.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo-bin", "1.2", "1.el10", sourcerpm="foo-1.2-1.el10.src.rpm"),
+            _bin_pkg("foo-doc", "1.10", "1.el10", sourcerpm="foo-1.10-1.el10.src.rpm"),
+        ],
+    }
+    failures = compute_srpm_version_inconsistencies(arch_pkgs)
+    newest_idx = next(i for i, ln in enumerate(failures) if "Newest SRPM:" in ln)
+    older_idx = next(i for i, ln in enumerate(failures) if "Older  SRPM:" in ln)
+    assert "foo-1.10-1.el10.src.rpm" in failures[newest_idx]
+    assert "foo-1.2-1.el10.src.rpm" in failures[older_idx]
+
+
+def test_srpm_consistency_ignores_packages_without_sourcerpm():
+    """Stripped-metadata repos occasionally ship a binary with no
+    ``<rpm:sourcerpm>`` in primary.xml. We can't decide consistency
+    for those — soft-skip rather than crash or false-positive.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    arch_pkgs = {
+        "x86_64": [
+            _bin_pkg("foo-bin", "1.0", "1.el10", sourcerpm=""),
+            _bin_pkg("foo-bin", "1.0", "2.el10", sourcerpm="foo-1.0-2.el10.src.rpm"),
+        ],
+    }
+    # One sourcerpm-less record + one valid → only one SRPM version
+    # surfaces in the map → no multi-version failure.
+    assert compute_srpm_version_inconsistencies(arch_pkgs) == []
+
+
+def test_srpm_consistency_empty_input_produces_no_failures():
+    """Defensive: no arches → no failures, no crash. Guard against a
+    future refactor that would dereference ``None`` on the empty case.
+    """
+    from tests.release.test_srpm_version_consistency import (
+        compute_srpm_version_inconsistencies,
+    )
+
+    assert compute_srpm_version_inconsistencies({}) == []
+
+
+def test_srpm_consistency_handles_hyphenated_package_names():
+    """Package names with embedded hyphens (``glibc-langpack-de``,
+    ``bash-completion``) must parse correctly. The greedy first group
+    in the SRPM regex relies on backtracking to land the version /
+    release at the last two hyphen-separated chunks; pin that here so
+    a future regex tweak can't silently regress.
+    """
+    from tests.release.test_srpm_version_consistency import _parse_srpm
+
+    assert _parse_srpm("glibc-langpack-de-2.34-100.el10.src.rpm") == (
+        "glibc-langpack-de", "2.34", "100.el10",
+    )
+    assert _parse_srpm("bash-completion-2.11-9.el10.src.rpm") == (
+        "bash-completion", "2.11", "9.el10",
+    )
+    # Malformed → None (no two trailing hyphen-separated chunks).
+    assert _parse_srpm("foo.src.rpm") is None

@@ -218,8 +218,15 @@ def test_render_pulp_internal_beta_raises_on_unknown_major():
 
 
 def test_prepare_repo_files_dir_extracts_for_stable(synthetic_repos_rpm, tmp_path):
-    """stable goes through the extract path — files come from the
-    rpm bytes verbatim."""
+    """stable goes through the extract path — basenames + section
+    structure match what the package shipped.
+
+    The byte-for-byte preservation contract no longer holds: the
+    bind-mount path now flips ``mirrorlist=`` → ``baseurl=`` so dnf
+    inside the container doesn't hit a mirrorlist service that lags
+    GA. Strict equality with ``extract_repo_files`` would mask that
+    flip; the dedicated tests below pin its shape explicitly.
+    """
     rc = _RC(source="stable", version="10.1")
     out = prepare_repo_files_dir(
         runtime_config=rc, arch="x86_64",
@@ -227,7 +234,71 @@ def test_prepare_repo_files_dir_extracts_for_stable(synthetic_repos_rpm, tmp_pat
     )
     assert out == tmp_path / "repos.d"
     files_on_disk = {p.name: p.read_bytes() for p in out.iterdir()}
-    assert files_on_disk == extract_repo_files(synthetic_repos_rpm)
+    # Same set of basenames as the package.
+    assert set(files_on_disk) == set(extract_repo_files(synthetic_repos_rpm))
+    # Section structure is preserved (only mirrorlist/baseurl lines flip).
+    for name, content in files_on_disk.items():
+        assert b"[almalinux-baseos]" in content, name
+
+
+def test_prepare_repo_files_dir_stable_comments_out_mirrorlist(
+    synthetic_repos_rpm, tmp_path
+):
+    """Container-side dnf must go via baseurl, not mirrorlist —
+    mirrors.almalinux.org propagates a fresh GA with a lag, the
+    canonical baseurl on repo.almalinux.org does not. Every live
+    ``mirrorlist=`` line in the package's ``.repo`` files must be
+    commented out in the bind-mount directory."""
+    rc = _RC(source="stable", version="10.1")
+    out = prepare_repo_files_dir(
+        runtime_config=rc, arch="x86_64",
+        target_dir=tmp_path / "repos.d", rpm_bytes=synthetic_repos_rpm,
+    )
+    for p in out.iterdir():
+        text = p.read_bytes().decode()
+        # No live ``mirrorlist=`` survives — ``\n`` anchor avoids matching
+        # an already-commented ``#mirrorlist=`` from a previous pass.
+        assert "\nmirrorlist=" not in "\n" + text, (
+            f"{p.name} still has a live mirrorlist=:\n{text}"
+        )
+        # The original URL stays intact, just commented.
+        assert "#mirrorlist=https://mirrors.almalinux.org/" in text, (
+            f"{p.name} missing the commented mirrorlist line:\n{text}"
+        )
+
+
+def test_prepare_repo_files_dir_stable_activates_commented_baseurl(
+    synthetic_repos_rpm, tmp_path
+):
+    """The package ships ``# baseurl=...`` as a documented fallback.
+    On the bind-mount path it must become live ``baseurl=...`` so dnf
+    actually uses it. URL bytes stay identical — only the leading
+    ``# `` is dropped."""
+    rc = _RC(source="stable", version="10.1")
+    out = prepare_repo_files_dir(
+        runtime_config=rc, arch="x86_64",
+        target_dir=tmp_path / "repos.d", rpm_bytes=synthetic_repos_rpm,
+    )
+    for p in out.iterdir():
+        text = p.read_bytes().decode()
+        assert "baseurl=https://repo.almalinux.org/" in text, (
+            f"{p.name} missing live baseurl=:\n{text}"
+        )
+        # And the placeholders ride through — dnf substitutes them
+        # inside the container, not us.
+        assert "$releasever" in text and "$basearch" in text, text
+
+
+def test_prepare_repo_files_dir_stable_preserves_extract_repo_files(synthetic_repos_rpm):
+    """``extract_repo_files`` itself stays verbatim — ``test_mirrorlist.py``
+    asserts the package's live ``mirrorlist=`` and commented
+    ``# baseurl=`` as a contract of the package. The transform must live
+    in the bind-mount dispatcher, not in the extractor."""
+    raw = extract_repo_files(synthetic_repos_rpm)
+    for content in raw.values():
+        text = content.decode()
+        assert "mirrorlist=https://mirrors.almalinux.org/" in text
+        assert "# baseurl=https://repo.almalinux.org/" in text
 
 
 def test_prepare_repo_files_dir_generates_for_pungi(tmp_path):
@@ -280,8 +351,8 @@ def test_prepare_repo_files_dir_pulp_extracts_and_layers_internal_beta(
 ):
     """pulp goes through the extract path AND layers the unsigned
     internal-beta on top — operators see both the package's stable
-    .repo files and ``post-check-pulp-internal-beta.repo`` in the
-    bind-mounted dir.
+    .repo files (with the same mirrorlist→baseurl flip stable gets)
+    and ``post-check-pulp-internal-beta.repo`` in the bind-mounted dir.
     """
     rc = _RC(source="pulp", version="10.1")
     out = prepare_repo_files_dir(
@@ -289,11 +360,18 @@ def test_prepare_repo_files_dir_pulp_extracts_and_layers_internal_beta(
         target_dir=tmp_path / "repos.d", rpm_bytes=synthetic_repos_rpm,
     )
     files_on_disk = {p.name: p.read_bytes() for p in out.iterdir()}
-    # the package's own .repo files are still there (extract path),
+    # The package's own .repo files are still there (extract path),
+    # with the mirrorlist→baseurl flip applied (same as stable —
+    # mirrorlist lags GA, baseurl doesn't).
     package_files = extract_repo_files(synthetic_repos_rpm)
-    for fname, content in package_files.items():
-        assert files_on_disk.get(fname) == content, (
-            f"pulp must keep the package's {fname} verbatim"
+    for fname in package_files:
+        assert fname in files_on_disk, f"pulp dropped the package's {fname}"
+        text = files_on_disk[fname].decode()
+        assert "\nmirrorlist=" not in "\n" + text, (
+            f"pulp must flip mirrorlist→baseurl on {fname}:\n{text}"
+        )
+        assert "baseurl=https://repo.almalinux.org/" in text, (
+            f"pulp must activate the commented baseurl in {fname}:\n{text}"
         )
     # plus the synthesised internal-beta layered on top.
     assert "post-check-pulp-internal-beta.repo" in files_on_disk

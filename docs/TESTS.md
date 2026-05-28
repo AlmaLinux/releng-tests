@@ -188,6 +188,37 @@ in sync).
 
 ---
 
+## tests/release/test_srpm_version_consistency.py
+
+Per-arch SRPM version consistency across all repos of a release. For
+every published architecture, every binary RPM must reference exactly
+one version of any given source RPM name — a release that ships two
+binaries built from different versions of the same SRPM is
+"split-brain" and dnf would resolve subpackages inconsistently.
+
+Consolidates the per-arch
+`check-<arch>-compose-srpm-versions-<major>.py` scripts from
+`releng-almalinux/tools/` into a single test that loops the full
+architecture matrix. Modular packages (`.module` in release) are
+excluded — module streams have their own per-stream lifecycle and
+routinely carry coexisting versions in repodata (same rationale as
+`test_noarch_parity._is_modular`). Debug repositories are out of scope
+for this first cut: debug binaries share their SRPM with the
+corresponding main binary, so an inconsistency in debug almost always
+also surfaces in main.
+
+Always iterates the full architecture matrix from
+`config/architectures.yaml` AND the full repo set of the source —
+consistency is a property of the release, not of `ALMA_ARCHES` /
+`ALMA_REPOS`. On `pulp`, the named repo set collapses to the flat
+per-arch internal-beta URL.
+
+| Test | What it checks |
+|---|---|
+| `test_srpm_versions_consistent_within_each_arch` | For every published arch, no source RPM name is referenced by more than one EVR. On failure, the report lists the newest SRPM, every older SRPM, and the binary RPM filenames built from those older SRPMs (those are the files an operator must delete from the repository to clear the drift). |
+
+---
+
 ## tests/release/test_os_release.py
 
 Integration checks for `/etc/os-release` and
@@ -247,6 +278,7 @@ major-only versions the test is skipped.
 | 7. `repomd.xml` signatures | `tests/release/test_repomd_signature.py` |
 | 8. noarch package versions identical across arches | `tests/release/test_noarch_parity.py` |
 | 9. `almalinux-release/repos` with the same N-E-V-R on every arch | `tests/release/test_release_parity.py` |
+| 10. SRPM version consistency within each arch (no split-brain on subpackages) | `tests/release/test_srpm_version_consistency.py` |
 
 ## How many tests run in each configuration
 
