@@ -527,10 +527,12 @@ def test_noarch_packages_identical_across_arches_across_all_repos(runtime_config
 
     # ``known_drift_b`` is the (repo, name) allowlist of accepted (B)
     # drifts — loaded from config so release engineers can add/remove
-    # entries without touching test code. See the YAML file's docstring
-    # for the scope guarantees (B-only, exact pair match, no SRPM
-    # widening).
-    known_drift_b = load_noarch_parity_known_drift()
+    # entries without touching test code. Scoped to the major under
+    # test: the AL9 i686 backlog must not silence the same name on
+    # AL10, where a rebuild is still expected. See the YAML file's
+    # docstring for the other scope guarantees (B-only, exact pair
+    # match, no SRPM widening).
+    known_drift_b = load_noarch_parity_known_drift(major)
     failures_a, failures_b = compute_noarch_parity_failures(cells, known_drift_b=known_drift_b)
     blocks = []
     if failures_a:

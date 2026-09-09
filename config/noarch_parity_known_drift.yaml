@@ -19,8 +19,17 @@
 # Schema
 # ------
 #   known_drift:
-#     <repo>:
-#       <name>: [<arch>, <arch>, ...]    # arches allowed to lag
+#     <major>:                           # "9", "10", … as a QUOTED string
+#       <repo>:
+#         <name>: [<arch>, <arch>, ...]  # arches allowed to lag
+#
+# The major level is REQUIRED. Accepted drift is a property of one
+# release stream, not of the distro: the AL9 i686 backlog below must
+# not silence the same package name on AL10, where a rebuild is still
+# expected. Quote the key (``"9"``, not ``9``) so YAML keeps it a
+# string and it compares equal to the major the test derives from
+# ``ALMA_VERSION``. A major with no accepted drift is simply absent —
+# the loader returns an empty map for it.
 #
 # The arches list is REQUIRED — there is no "any arch" wildcard. The
 # release process has already accepted the drift only for a specific
@@ -38,6 +47,10 @@
 #   remaining arches still disagree → the drift is wider than what
 #   was accepted → fire. So listing ``[i686]`` does NOT silence a
 #   later ppc64le rebuild that misses x86_64.
+# * Suppression does NOT widen to other majors. An entry under ``"9"``
+#   is invisible to an AL10 run: the loader is handed the major under
+#   test and only reads that subtree. A drift that turns out to be
+#   accepted on both streams has to be listed under both.
 # * Suppression does NOT widen to other repos. ``AppStream/cockpit-doc``
 #   here does NOT silence ``BaseOS/cockpit-doc`` — separate channels.
 # * Suppression does NOT widen to other binary names of the same SRPM.
@@ -59,127 +72,182 @@
 # Add a new entry only after confirming the drift is intentional and
 # will not be fixed by a rebuild. The expected drift pattern today is
 # "i686 stuck on an older Z-stream tag, the four main arches on the
-# current minor" — list just ``[i686]`` for those. Anything else (e.g.
-# drift between aarch64 and x86_64) should be triaged as a real
-# release bug first and only allow-listed if a rebuild is genuinely
-# not coming.
+# current minor" — list just ``[i686]`` for those, under the major it
+# was observed on. Anything else (e.g. drift between aarch64 and
+# x86_64) should be triaged as a real release bug first and only
+# allow-listed if a rebuild is genuinely not coming.
 
-# Per-repo maps of binary noarch ``name -> [arches allowed to lag]``.
-# Repo names match the ``.repo`` section labels post-check iterates
-# over (``BaseOS``, ``AppStream``, ``CRB``, ``extras``, …) — same
-# strings as in ``_DEFAULT_REPOS`` in ``post_check/config.py``.
+# Per-major, per-repo maps of binary noarch
+# ``name -> [arches allowed to lag]``. Repo names match the ``.repo``
+# section labels post-check iterates over (``BaseOS``, ``AppStream``,
+# ``CRB``, ``extras``, …) — same strings as in ``_DEFAULT_REPOS`` in
+# ``post_check/config.py``.
 known_drift:
 
-  # AppStream — the long tail of legacy Java/build-tooling noarch
-  # packages plus cockpit/awscli2/mingw-qemu-ga-win/oscap. All show
-  # the same pattern: ``.el9`` on aarch64/ppc64le/s390x/x86_64,
-  # older Z-stream on i686.
-  AppStream:
-    # SRPM `ant` — 24 subpackages, all drift together on i686.
-    ant: [i686]
-    ant-antlr: [i686]
-    ant-apache-bcel: [i686]
-    ant-apache-bsf: [i686]
-    ant-apache-oro: [i686]
-    ant-apache-regexp: [i686]
-    ant-apache-resolver: [i686]
-    ant-apache-xalan2: [i686]
-    ant-commons-logging: [i686]
-    ant-commons-net: [i686]
-    ant-javamail: [i686]
-    ant-jdepend: [i686]
-    ant-jmf: [i686]
-    ant-jsch: [i686]
-    ant-junit: [i686]
-    ant-junit5: [i686]
-    ant-lib: [i686]
-    ant-openjdk11: [i686]
-    ant-openjdk17: [i686]
-    ant-openjdk21: [i686]
-    ant-openjdk8: [i686]
-    ant-swing: [i686]
-    ant-testutil: [i686]
-    ant-xz: [i686]
-    # SRPM `slf4j` — 3 subpackages drifting together on i686.
-    jcl-over-slf4j: [i686]
-    slf4j: [i686]
-    slf4j-jdk14: [i686]
-    # SRPM `cockpit` — AppStream half (the BaseOS half is listed below).
-    cockpit-packagekit: [i686]
-    cockpit-storaged: [i686]
-    # Singleton legacy noarch packages stuck on Z-stream on i686.
-    antlr-tool: [i686]
-    apache-commons-cli: [i686]
-    apache-commons-codec: [i686]
-    apache-commons-io: [i686]
-    apache-commons-lang3: [i686]
-    apache-commons-logging: [i686]
-    apache-commons-net: [i686]
-    assertj-core: [i686]
-    atinject: [i686]
-    awscli2: [i686]
-    bcel: [i686]
-    bsf: [i686]
-    byte-buddy: [i686]
-    cdi-api: [i686]
-    cockpit-ostree: [i686]
-    google-guice: [i686]
-    guava: [i686]
-    hamcrest: [i686]
-    httpcomponents-client: [i686]
-    httpcomponents-core: [i686]
-    jakarta-activation: [i686]
-    jakarta-annotations: [i686]
-    jakarta-mail: [i686]
-    jakarta-oro: [i686]
-    jdepend: [i686]
-    jsch: [i686]
-    jsoup: [i686]
-    jsr-305: [i686]
-    junit: [i686]
-    junit5: [i686]
-    jzlib: [i686]
-    maven-resolver: [i686]
-    maven-shared-utils: [i686]
-    maven-wagon: [i686]
-    mingw-qemu-ga-win: [i686]
-    objectweb-asm: [i686]
-    opentest4j: [i686]
-    oscap-anaconda-addon: [i686]
-    plexus-cipher: [i686]
-    plexus-classworlds: [i686]
-    plexus-containers-component-annotations: [i686]
-    plexus-interpolation: [i686]
-    plexus-sec-dispatcher: [i686]
-    plexus-utils: [i686]
-    regexp: [i686]
-    sisu: [i686]
-    univocity-parsers: [i686]
-    usbguard-selinux: [i686]
-    xalan-j2: [i686]
-    xerces-j2: [i686]
-    xml-commons-apis: [i686]
-    xml-commons-resolver: [i686]
-    xz-java: [i686]
+  # ---- AlmaLinux 9 ----------------------------------------------------
+  # Every entry below is the AL9 pattern described above: the four main
+  # arches carry the current minor, i686 stays on an older Z-stream tag
+  # and will not be rebuilt.
+  "9":
 
-  # BaseOS — the cockpit-system / cockpit-doc pair (SRPM `cockpit`).
-  BaseOS:
-    cockpit-doc: [i686]
-    cockpit-system: [i686]
+    # AppStream — the long tail of legacy Java/build-tooling noarch
+    # packages plus cockpit/awscli2/mingw-qemu-ga-win/oscap. All show
+    # the same pattern: ``.el9`` on aarch64/ppc64le/s390x/x86_64,
+    # older Z-stream on i686.
+    AppStream:
+      # SRPM `ant` — 24 subpackages, all drift together on i686.
+      ant: [i686]
+      ant-antlr: [i686]
+      ant-apache-bcel: [i686]
+      ant-apache-bsf: [i686]
+      ant-apache-oro: [i686]
+      ant-apache-regexp: [i686]
+      ant-apache-resolver: [i686]
+      ant-apache-xalan2: [i686]
+      ant-commons-logging: [i686]
+      ant-commons-net: [i686]
+      ant-javamail: [i686]
+      ant-jdepend: [i686]
+      ant-jmf: [i686]
+      ant-jsch: [i686]
+      ant-junit: [i686]
+      ant-junit5: [i686]
+      ant-lib: [i686]
+      ant-openjdk11: [i686]
+      ant-openjdk17: [i686]
+      ant-openjdk21: [i686]
+      ant-openjdk8: [i686]
+      ant-swing: [i686]
+      ant-testutil: [i686]
+      ant-xz: [i686]
+      # SRPM `slf4j` — 3 subpackages drifting together on i686.
+      jcl-over-slf4j: [i686]
+      slf4j: [i686]
+      slf4j-jdk14: [i686]
+      # SRPM `cockpit` — AppStream half (the BaseOS half is listed below).
+      cockpit-packagekit: [i686]
+      cockpit-storaged: [i686]
+      # Singleton legacy noarch packages stuck on Z-stream on i686.
+      antlr-tool: [i686]
+      apache-commons-cli: [i686]
+      apache-commons-codec: [i686]
+      apache-commons-io: [i686]
+      apache-commons-lang3: [i686]
+      apache-commons-logging: [i686]
+      apache-commons-net: [i686]
+      assertj-core: [i686]
+      atinject: [i686]
+      awscli2: [i686]
+      bcel: [i686]
+      bsf: [i686]
+      byte-buddy: [i686]
+      cdi-api: [i686]
+      cockpit-ostree: [i686]
+      google-guice: [i686]
+      guava: [i686]
+      hamcrest: [i686]
+      httpcomponents-client: [i686]
+      httpcomponents-core: [i686]
+      jakarta-activation: [i686]
+      jakarta-annotations: [i686]
+      jakarta-mail: [i686]
+      jakarta-oro: [i686]
+      jdepend: [i686]
+      jsch: [i686]
+      jsoup: [i686]
+      jsr-305: [i686]
+      junit: [i686]
+      junit5: [i686]
+      jzlib: [i686]
+      maven-resolver: [i686]
+      maven-shared-utils: [i686]
+      maven-wagon: [i686]
+      mingw-qemu-ga-win: [i686]
+      objectweb-asm: [i686]
+      opentest4j: [i686]
+      oscap-anaconda-addon: [i686]
+      plexus-cipher: [i686]
+      plexus-classworlds: [i686]
+      plexus-containers-component-annotations: [i686]
+      plexus-interpolation: [i686]
+      plexus-sec-dispatcher: [i686]
+      plexus-utils: [i686]
+      regexp: [i686]
+      sisu: [i686]
+      univocity-parsers: [i686]
+      usbguard-selinux: [i686]
+      xalan-j2: [i686]
+      xerces-j2: [i686]
+      xml-commons-apis: [i686]
+      xml-commons-resolver: [i686]
+      xz-java: [i686]
+      # SRPM `libreoffice` — 40 noarch subpackages (37 autocorr locale
+      # packs plus data/opensymbol-fonts/ure-common). i686 was last
+      # rebuilt at 7.1.8.1-15.el9_5.alma.1 and its `libreoffice-core.i686`
+      # strictly requires `libreoffice-data = 7.1.8.1-15.el9_5.alma.1`,
+      # which pins the whole noarch set three minors behind the four main
+      # arches (7.1.8.1-15.el9_8.2.alma.1). Closing the gap needs a full
+      # LibreOffice rebuild for i686; the el9_5 set installs cleanly on
+      # i686 today, so the drift is accepted instead.
+      autocorr-af: [i686]
+      autocorr-bg: [i686]
+      autocorr-ca: [i686]
+      autocorr-cs: [i686]
+      autocorr-da: [i686]
+      autocorr-de: [i686]
+      autocorr-dsb: [i686]
+      autocorr-el: [i686]
+      autocorr-en: [i686]
+      autocorr-es: [i686]
+      autocorr-fa: [i686]
+      autocorr-fi: [i686]
+      autocorr-fr: [i686]
+      autocorr-ga: [i686]
+      autocorr-hr: [i686]
+      autocorr-hsb: [i686]
+      autocorr-hu: [i686]
+      autocorr-is: [i686]
+      autocorr-it: [i686]
+      autocorr-ja: [i686]
+      autocorr-ko: [i686]
+      autocorr-lb: [i686]
+      autocorr-lt: [i686]
+      autocorr-mn: [i686]
+      autocorr-nl: [i686]
+      autocorr-pl: [i686]
+      autocorr-pt: [i686]
+      autocorr-ro: [i686]
+      autocorr-ru: [i686]
+      autocorr-sk: [i686]
+      autocorr-sl: [i686]
+      autocorr-sr: [i686]
+      autocorr-sv: [i686]
+      autocorr-tr: [i686]
+      autocorr-vi: [i686]
+      autocorr-vro: [i686]
+      autocorr-zh: [i686]
+      libreoffice-data: [i686]
+      libreoffice-opensymbol-fonts: [i686]
+      libreoffice-ure-common: [i686]
 
-  # CRB — xmvn stack plus three singletons (ant-manual is part of
-  # SRPM `ant` published into CRB, byte-buddy-agent companion of
-  # byte-buddy in AppStream, plexus-containers-container-default
-  # companion of the component-annotations sibling).
-  CRB:
-    ant-manual: [i686]
-    byte-buddy-agent: [i686]
-    plexus-containers-container-default: [i686]
-    xmvn-core: [i686]
-    xmvn-minimal: [i686]
-    xmvn-mojo: [i686]
-    xmvn-tools: [i686]
+    # BaseOS — the cockpit-system / cockpit-doc pair (SRPM `cockpit`).
+    BaseOS:
+      cockpit-doc: [i686]
+      cockpit-system: [i686]
 
-  # extras — CentOS-derived release-messaging metapackage.
-  extras:
-    centos-release-messaging: [i686]
+    # CRB — xmvn stack plus three singletons (ant-manual is part of
+    # SRPM `ant` published into CRB, byte-buddy-agent companion of
+    # byte-buddy in AppStream, plexus-containers-container-default
+    # companion of the component-annotations sibling).
+    CRB:
+      ant-manual: [i686]
+      byte-buddy-agent: [i686]
+      plexus-containers-container-default: [i686]
+      xmvn-core: [i686]
+      xmvn-minimal: [i686]
+      xmvn-mojo: [i686]
+      xmvn-tools: [i686]
+
+    # extras — CentOS-derived release-messaging metapackage.
+    extras:
+      centos-release-messaging: [i686]

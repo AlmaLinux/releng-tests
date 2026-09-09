@@ -1139,17 +1139,17 @@ def test_noarch_parity_known_drift_b_default_none_means_no_suppression():
 
 def test_load_noarch_parity_known_drift_parses_yaml_into_pair_arch_map():
     """The shipped YAML loads into a non-empty
-    ``dict[(repo, name), frozenset[arches]]`` and covers the four
-    repos in scope (AppStream, BaseOS, CRB, extras). Pins the
+    ``dict[(repo, name), frozenset[arches]]`` for major 9 and covers
+    the four repos in scope (AppStream, BaseOS, CRB, extras). Pins the
     loader+schema together so an accidental rename of the top-level
     key or a switch in shape is caught here, not deep in a release
     run.
     """
     from post_check.config import load_noarch_parity_known_drift
 
-    pairs = load_noarch_parity_known_drift()
+    pairs = load_noarch_parity_known_drift("9")
     assert isinstance(pairs, dict)
-    assert pairs, "shipped YAML is non-empty"
+    assert pairs, "shipped YAML is non-empty for major 9"
     # Every entry is a (repo, name) -> non-empty frozenset[str] mapping.
     for (repo, name), arches in pairs.items():
         assert isinstance(repo, str) and repo
@@ -1167,6 +1167,29 @@ def test_load_noarch_parity_known_drift_parses_yaml_into_pair_arch_map():
     assert pairs[("BaseOS", "cockpit-doc")] == frozenset({"i686"})
     assert pairs[("CRB", "xmvn-core")] == frozenset({"i686"})
     assert pairs[("extras", "centos-release-messaging")] == frozenset({"i686"})
+    # SRPM `libreoffice`: i686 is pinned three minors back by
+    # ``libreoffice-core.i686``'s strict ``libreoffice-data =`` dep, so
+    # the whole 40-package noarch set is accepted drift on AL9.
+    assert pairs[("AppStream", "libreoffice-data")] == frozenset({"i686"})
+    assert pairs[("AppStream", "libreoffice-ure-common")] == frozenset({"i686"})
+    assert pairs[("AppStream", "autocorr-af")] == frozenset({"i686"})
+    lo = [n for (r, n) in pairs if r == "AppStream" and n.startswith("autocorr-")]
+    assert len(lo) == 37, f"expected 37 autocorr locale packs, got {len(lo)}"
+
+
+def test_load_noarch_parity_known_drift_is_scoped_to_the_requested_major():
+    """Entries live under a release major and must not leak across
+    streams. The AL9 i686 backlog is accepted because those i686
+    builds will never be refreshed; the same name drifting on AL10 is
+    a fresh release bug and must still fire. A major with no accepted
+    drift yields an empty map, not the AL9 list.
+    """
+    from post_check.config import load_noarch_parity_known_drift
+
+    assert load_noarch_parity_known_drift("9"), "AL9 has accepted drift"
+    assert load_noarch_parity_known_drift("10") == {}, (
+        "AL10 has no accepted drift — the AL9 allowlist must not leak"
+    )
 
 
 def test_load_noarch_parity_known_drift_rejects_bad_shape(tmp_path, monkeypatch):
@@ -1184,17 +1207,16 @@ def test_load_noarch_parity_known_drift_rejects_bad_shape(tmp_path, monkeypatch)
         "known_drift: 'not a mapping at all'\n"
     )
     with pytest.raises(ValueError, match="must be a mapping"):
-        cfg.load_noarch_parity_known_drift()
+        cfg.load_noarch_parity_known_drift("9")
 
 
-def test_load_noarch_parity_known_drift_rejects_old_list_shape(tmp_path, monkeypatch):
-    """The previous shipped shape was ``repo: [name, name, ...]`` with
-    no arches per entry. That shape is no longer supported — every
-    entry must spell out the arches whose drift is accepted. The
-    loader must reject the old list-of-strings form with a clear
-    error rather than silently treating it as "any arch", which
-    would re-introduce the very pre-arch-scoped bug this rewrite
-    fixes.
+def test_load_noarch_parity_known_drift_rejects_pre_major_shape(tmp_path, monkeypatch):
+    """The previous shipped shape put the repo at the top level
+    (``known_drift: {AppStream: {...}}``) with no release major. That
+    shape is no longer supported. Silently reading a repo name as a
+    major would make every accepted drift invisible for every major —
+    the operator would get a wall of "new" failures with no hint that
+    the file simply gained a level, so the loader must say so.
     """
     import post_check.config as cfg
 
@@ -1203,11 +1225,54 @@ def test_load_noarch_parity_known_drift_rejects_old_list_shape(tmp_path, monkeyp
     (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
         "known_drift:\n"
         "  AppStream:\n"
-        "    - ant\n"
-        "    - slf4j\n"
+        "    ant: [i686]\n"
+    )
+    with pytest.raises(ValueError, match="must be release majors"):
+        cfg.load_noarch_parity_known_drift("9")
+
+
+def test_load_noarch_parity_known_drift_rejects_unquoted_major(tmp_path, monkeypatch):
+    """``9:`` unquoted parses as the int ``9`` and would silently miss
+    the string major the test derives from ``ALMA_VERSION``, yielding
+    "no accepted drift" instead of the AL9 list. Reject it at load
+    time so the YAML has to spell out ``"9"``.
+    """
+    import post_check.config as cfg
+
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
+        "known_drift:\n"
+        "  9:\n"
+        "    AppStream:\n"
+        "      ant: [i686]\n"
+    )
+    with pytest.raises(ValueError, match="must be release majors"):
+        cfg.load_noarch_parity_known_drift("9")
+
+
+def test_load_noarch_parity_known_drift_rejects_old_list_shape(tmp_path, monkeypatch):
+    """Within a major, the shape is ``repo: {name: [arch, ...]}``. An
+    older revision used ``repo: [name, name, ...]`` with no arches per
+    entry; that is no longer supported — every entry must spell out
+    the arches whose drift is accepted. The loader must reject the
+    list-of-strings form with a clear error rather than silently
+    treating it as "any arch", which would re-introduce the very
+    pre-arch-scoped bug that shape had.
+    """
+    import post_check.config as cfg
+
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
+        "known_drift:\n"
+        '  "9":\n'
+        "    AppStream:\n"
+        "      - ant\n"
+        "      - slf4j\n"
     )
     with pytest.raises(ValueError, match="must be a mapping"):
-        cfg.load_noarch_parity_known_drift()
+        cfg.load_noarch_parity_known_drift("9")
 
 
 def test_load_noarch_parity_known_drift_rejects_empty_arches_list(tmp_path, monkeypatch):
@@ -1223,11 +1288,12 @@ def test_load_noarch_parity_known_drift_rejects_empty_arches_list(tmp_path, monk
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "noarch_parity_known_drift.yaml").write_text(
         "known_drift:\n"
-        "  AppStream:\n"
-        "    ant: []\n"
+        '  "9":\n'
+        "    AppStream:\n"
+        "      ant: []\n"
     )
     with pytest.raises(ValueError, match="non-empty list of arches"):
-        cfg.load_noarch_parity_known_drift()
+        cfg.load_noarch_parity_known_drift("9")
 
 
 def test_load_noarch_parity_known_drift_missing_file_returns_empty(tmp_path, monkeypatch):
@@ -1240,7 +1306,7 @@ def test_load_noarch_parity_known_drift_missing_file_returns_empty(tmp_path, mon
 
     # Point ROOT at a directory that has no config/ subtree.
     monkeypatch.setattr(cfg, "ROOT", tmp_path)
-    assert cfg.load_noarch_parity_known_drift() == {}
+    assert cfg.load_noarch_parity_known_drift("9") == {}
 
 
 # ============================================================ SRPM version consistency

@@ -260,14 +260,28 @@ def load_architectures() -> dict[str, Any]:
     return yaml.safe_load((ROOT / "config" / "architectures.yaml").read_text())
 
 
-def load_noarch_parity_known_drift() -> dict[tuple[str, str], frozenset[str]]:
+def load_noarch_parity_known_drift(
+    major: str,
+) -> dict[tuple[str, str], frozenset[str]]:
     """Read ``config/noarch_parity_known_drift.yaml`` into a map of
     ``(repo, name) -> {allowed arches}`` that ``test_noarch_parity``
     invariant (B) consults when deciding whether a flagged drift is an
     accepted one.
 
+    Only the ``major`` subtree is read.
+
     Shape rationale
     ---------------
+    The file is keyed by release major first
+    (``known_drift: {"9": {<repo>: {<name>: [arch, ...]}}}``) because
+    accepted drift belongs to one release stream, not to the distro.
+    The AL9 i686 backlog (the Java stack, cockpit, xmvn, LibreOffice,
+    …) is accepted because those i686 builds will never be refreshed;
+    the same package name drifting on AL10 is a fresh release bug and
+    must still fire. Reading only the requested major is what keeps
+    those two cases apart — there is deliberately no "all majors"
+    wildcard.
+
     The arches list is a **required** part of each entry, not an
     optional default. The release process has accepted drift only on
     specific arches (i686 today); listing the arch explicitly is what
@@ -277,22 +291,44 @@ def load_noarch_parity_known_drift() -> dict[tuple[str, str], frozenset[str]]:
     ``compute_noarch_parity_failures``), so listing ``[i686]`` does
     not silence a later ppc64le rebuild that misses x86_64.
 
-    Returns an empty dict when the file is absent — keeping the
-    parity test functional in environments where no drift has been
-    accepted (a fresh AL10 release, say). Schema errors (a non-list
-    arches value, a non-string entry, an empty arches list) raise
-    ``ValueError`` at load time rather than silently degrading to
-    "all drift accepted" — the latter would turn the next release
-    run green by accident.
+    Returns an empty dict when the file is absent, or when it carries
+    no entries for ``major`` — keeping the parity test functional in
+    environments where no drift has been accepted (a fresh AL10
+    release, say). Schema errors (a non-list arches value, a
+    non-string entry, an empty arches list, or the pre-major
+    ``repo``-at-top-level shape) raise ``ValueError`` at load time
+    rather than silently degrading to "all drift accepted" — the
+    latter would turn the next release run green by accident.
     """
     path = ROOT / "config" / "noarch_parity_known_drift.yaml"
     if not path.exists():
         return {}
     data = yaml.safe_load(path.read_text()) or {}
-    raw = data.get("known_drift") or {}
-    if not isinstance(raw, dict):
+    by_major = data.get("known_drift") or {}
+    if not isinstance(by_major, dict):
         raise ValueError(
             f"{path.name}: top-level 'known_drift' must be a mapping "
+            f"of major -> {{repo: {{name: [arch, ...]}}}}, got "
+            f"{type(by_major).__name__}"
+        )
+    # Catch the pre-major shape (``known_drift: {AppStream: {...}}``)
+    # explicitly. Silently treating a repo key as a major would make
+    # every previously-accepted drift invisible for every major, i.e.
+    # a wall of "new" failures on the next release run with no clue
+    # that the file simply moved a level.
+    for key in by_major:
+        if not (isinstance(key, str) and key.isdigit()):
+            raise ValueError(
+                f"{path.name}: known_drift keys must be release majors "
+                f"as quoted strings (\"9\", \"10\", …), got {key!r}. "
+                f"(The previous repo-at-top-level shape is no longer "
+                f"supported — nest each repo under the major whose "
+                f"release accepted the drift.)"
+            )
+    raw = by_major.get(major) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{path.name}: known_drift[{major!r}] must be a mapping "
             f"of repo -> {{name: [arch, ...]}}, got {type(raw).__name__}"
         )
     out: dict[tuple[str, str], frozenset[str]] = {}
@@ -304,30 +340,31 @@ def load_noarch_parity_known_drift() -> dict[tuple[str, str], frozenset[str]]:
             continue
         if not isinstance(names, dict):
             raise ValueError(
-                f"{path.name}: known_drift[{repo!r}] must be a mapping "
-                f"of name -> [arch, ...], got {type(names).__name__}. "
-                f"(The previous list-of-strings shape is no longer "
-                f"supported — each entry must specify the arches whose "
-                f"drift is accepted.)"
+                f"{path.name}: known_drift[{major!r}][{repo!r}] must be a "
+                f"mapping of name -> [arch, ...], got "
+                f"{type(names).__name__}. (The previous list-of-strings "
+                f"shape is no longer supported — each entry must specify "
+                f"the arches whose drift is accepted.)"
             )
         for name, arches in names.items():
             if not isinstance(name, str) or not name:
                 raise ValueError(
-                    f"{path.name}: known_drift[{repo!r}] contains a "
-                    f"non-string or empty key: {name!r}"
+                    f"{path.name}: known_drift[{major!r}][{repo!r}] "
+                    f"contains a non-string or empty key: {name!r}"
                 )
             if not isinstance(arches, list) or not arches:
                 raise ValueError(
-                    f"{path.name}: known_drift[{repo!r}][{name!r}] must "
-                    f"be a non-empty list of arches, got {arches!r}. "
-                    f"There is no implicit 'any arch' — list the arches "
-                    f"whose drift is accepted explicitly."
+                    f"{path.name}: known_drift[{major!r}][{repo!r}]"
+                    f"[{name!r}] must be a non-empty list of arches, got "
+                    f"{arches!r}. There is no implicit 'any arch' — list "
+                    f"the arches whose drift is accepted explicitly."
                 )
             for a in arches:
                 if not isinstance(a, str) or not a:
                     raise ValueError(
-                        f"{path.name}: known_drift[{repo!r}][{name!r}] "
-                        f"contains a non-string arch entry: {a!r}"
+                        f"{path.name}: known_drift[{major!r}][{repo!r}]"
+                        f"[{name!r}] contains a non-string arch entry: "
+                        f"{a!r}"
                     )
             out[(repo, name)] = frozenset(arches)
     return out
