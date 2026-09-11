@@ -538,6 +538,7 @@ def architectures_cfg() -> dict:
 # YAML rather than littering each test with ``if arch == "i686":`` checks).
 _ARCH_SKIP_FILE_CATEGORIES: dict[str, str] = {
     "tests/release/test_iso_checksums.py": "iso",
+    "tests/release/test_iso_presence.py": "iso",
     "tests/release/test_dnf_upgrade.py": "upgrade",
 }
 

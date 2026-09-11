@@ -36,7 +36,10 @@ def _skip_for_pulp(runtime_config):
         )
 
 
-EXPECTED_ISO_KINDS = ["dvd", "boot", "minimal"]
+# The expected flavour set lives in the helper (``iso.ISO_KINDS``) —
+# ``test_iso_presence`` asserts against the same list, and two copies
+# would eventually disagree about what a release must publish.
+EXPECTED_ISO_KINDS = iso.ISO_KINDS
 
 
 def _fetch_checksum(runtime_config, arch):

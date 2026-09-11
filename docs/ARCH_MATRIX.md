@@ -37,6 +37,7 @@ All test files below live under `tests/release/`.
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | `test_repomd_signature.py`        | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `test_iso_checksums.py`           | ✅ | ✅ | ✅ | ✅ | ⏭️ `iso` | ✅ |
+| `test_iso_presence.py`            | ✅ | ✅ | ✅ | ✅ | ⏭️ `iso` | ✅ |
 | `test_mirrorlist.py`              | ✅ | ✅ | ✅ | ✅ | ✅ (vault-only) | ✅ |
 | `test_almalinux_repos_pkg.py`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `test_release_parity.py`          | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (AL10) |

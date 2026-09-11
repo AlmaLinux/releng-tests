@@ -98,6 +98,8 @@ follow the link for the full assertion list.
 | 7 | `repomd.xml` GPG signatures | [`tests/release/test_repomd_signature.py`](tests/release/test_repomd_signature.py) |
 | 8 | noarch packages identical across arches (NEVRA → sha256, name → latest EVR) | [`tests/release/test_noarch_parity.py`](tests/release/test_noarch_parity.py) |
 | 9 | `almalinux-release` / `almalinux-repos` have the same N-E-V-R on every arch (arch and binary checksum intentionally differ — these packages are built per-arch on AL10) | [`tests/release/test_release_parity.py`](tests/release/test_release_parity.py) |
+| 10 | SRPM version consistency within each arch (no split-brain subpackages) | [`tests/release/test_srpm_version_consistency.py`](tests/release/test_srpm_version_consistency.py) |
+| 11 | ISOs published and fully uploaded under `isos/<arch>/` on the public mirror — stable/beta only | [`tests/release/test_iso_presence.py`](tests/release/test_iso_presence.py) |
 
 → **Detailed catalogue:** [`docs/TESTS.md`](docs/TESTS.md).
 → **Architecture × version matrix:** [`docs/ARCH_MATRIX.md`](docs/ARCH_MATRIX.md).

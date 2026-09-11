@@ -184,6 +184,45 @@ class RepoURL:
             )
         raise ValueError(f"unknown source: {self.source}")
 
+    def public_iso_dir(self) -> str:
+        """Public download directory for the installation media on
+        ``repo.almalinux.org`` — the URL a release announcement sends
+        users to (``…/almalinux/10.2/isos/aarch64`` for stable,
+        ``…/almalinux/10.3-beta/isos/aarch64`` for beta).
+
+        Why this is not :meth:`iso_dir` for beta: beta *yum* repos are
+        served only from ``vault.almalinux.org`` (that is what the
+        public mirrorlist hands out), and vault keeps every past beta —
+        which makes it the right base for the CHECKSUM trust chain that
+        ``test_iso_checksums`` verifies. The ISOs, however, are
+        published to ``repo.almalinux.org`` as well, and *that* copy is
+        the one users download and the one the publish step populates
+        and later prunes. "Are the ISOs in place?" therefore has to be
+        asked here, not on vault.
+
+        Only stable and beta publish to the public mirror: pungi serves
+        media from its own per-arch compose host and pulp ships no ISOs
+        at all, so both raise instead of returning a URL that would
+        404 by construction.
+        """
+        if self.source == "stable":
+            # Same per-arch base as the stable repos (i686 → vault), so
+            # this stays correct for any arch whose media ever move host.
+            return f"{self._stable_base_url()}/{self.version}/isos/{self.arch}"
+        if self.source == "beta":
+            # Hardcoded to the public mirror rather than derived from
+            # ``_stable_base_url``: the beta ISO tree exists only on
+            # repo.almalinux.org under the ``-beta`` suffix.
+            return (
+                f"https://repo.almalinux.org/almalinux/"
+                f"{self.version}-beta/isos/{self.arch}"
+            )
+        raise ValueError(
+            f"source={self.source} publishes no ISOs on repo.almalinux.org "
+            f"(only stable and beta do); use iso_dir() for the "
+            f"source's own media location"
+        )
+
 
 def pulp_internal_beta_repo_base(*, version: str, arch: str) -> str:
     """Return the per-arch internal-beta repo base URL for ``ALMA_SOURCE=pulp``.

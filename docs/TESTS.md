@@ -54,6 +54,45 @@ ISO files themselves are actually reachable.
 
 ---
 
+## tests/release/test_iso_presence.py
+
+"Are the installation media actually in place?" — asked against the
+public ISO directory on `repo.almalinux.org`
+(`…/almalinux/10.2/isos/<arch>/` for stable,
+`…/almalinux/10.3-beta/isos/<arch>/` for beta), with the **directory
+index** as the source of truth instead of `CHECKSUM`.
+
+Why this is separate from `test_iso_checksums.py`:
+
+* Those tests start from `CHECKSUM` and therefore **skip** when
+  nothing is published — the release report then reads "SKIPPED"
+  where an operator needs to read "the ISOs are not there". Here a
+  missing ISO tree is a **failure**.
+* For beta the two locations differ on purpose. Beta yum repos (and
+  so `RepoURL.iso_dir`) are served only from `vault.almalinux.org`,
+  which is the right base for the CHECKSUM trust chain and keeps
+  every past beta. The ISOs are additionally published to
+  `repo.almalinux.org/almalinux/<version>-beta/isos/` — the copy the
+  beta announcement points users at. This module checks that one, via
+  `RepoURL.public_iso_dir`.
+
+Skipped entirely for `pungi` (media live on the per-arch compose host)
+and `pulp` (no ISOs at all), and for `i686` via
+`skip_categories: [iso]`. Note the consequence of "missing means
+failure": running the suite against a **superseded** release (an older
+minor, or a past beta) fails here, because AlmaLinux prunes the media
+of superseded releases from `repo.almalinux.org`. The failure message
+says so explicitly.
+
+| Test | What it checks |
+|---|---|
+| `test_iso_dir_is_published` (`arch` fixture) | `isos/<arch>/` returns 200 on the public mirror and lists at least one `.iso`. |
+| `test_iso_dir_has_every_expected_flavour` (`arch` fixture) | Each of `dvd`/`boot`/`minimal` is present as a **version-stamped** ISO for the release under test — `AlmaLinux-<version>-<arch>-<kind>.iso`, or `AlmaLinux-<version>-beta-<respin>-<arch>-<kind>.iso` for beta. A leftover ISO from the previous minor does not satisfy it. |
+| `test_iso_dir_has_latest_aliases` (`arch` fixture) | The version-independent `AlmaLinux-<major>-latest[-beta]-<arch>-<kind>.iso` alias exists for every flavour — those are the names the website and downstream tooling link to. |
+| `test_published_isos_are_fully_uploaded` (`arch` fixture) | For every `.iso` in the directory: HEAD returns 200 and the served `Content-Length` equals the byte count `CHECKSUM` declares for that file (`# <name>: <N> bytes`), catching a truncated or still-syncing upload that a plain 200 would pass. Files with no declared size still have to clear a 100 MiB plausibility floor. |
+
+---
+
 ## tests/release/test_mirrorlist.py
 
 Tests for the public mirrorlist service (`mirrors.almalinux.org`)
@@ -279,6 +318,7 @@ major-only versions the test is skipped.
 | 8. noarch package versions identical across arches | `tests/release/test_noarch_parity.py` |
 | 9. `almalinux-release/repos` with the same N-E-V-R on every arch | `tests/release/test_release_parity.py` |
 | 10. SRPM version consistency within each arch (no split-brain on subpackages) | `tests/release/test_srpm_version_consistency.py` |
+| 11. ISOs published and complete on the public mirror (stable/beta) | `tests/release/test_iso_presence.py` |
 
 ## How many tests run in each configuration
 

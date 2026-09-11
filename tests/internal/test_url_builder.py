@@ -348,6 +348,65 @@ def test_url_builder_iso_dir_x86_64():
     assert u.iso_dir() == "https://repo.almalinux.org/almalinux/10.1/isos/x86_64"
 
 
+# ------------------------------------------------------- public ISO directory
+# ``public_iso_dir`` is the media location users are pointed at, which
+# for beta is NOT where the yum repos (and therefore ``iso_dir``) live.
+
+
+def test_url_builder_public_iso_dir_stable_matches_iso_dir():
+    """For stable the public media location and the repo-side one are
+    the same path — pin that, so the extra method cannot silently start
+    checking a different tree than ``test_iso_checksums`` does.
+    """
+    u = RepoURL.from_config(
+        source="stable", version="10.2", arch="aarch64", repo="BaseOS"
+    )
+    assert u.public_iso_dir() == (
+        "https://repo.almalinux.org/almalinux/10.2/isos/aarch64"
+    )
+    assert u.public_iso_dir() == u.iso_dir()
+
+
+def test_url_builder_public_iso_dir_beta_is_on_the_public_mirror():
+    """Beta ISOs live under the ``-beta`` suffix on repo.almalinux.org,
+    while beta *repos* (``iso_dir`` included) are served from vault.
+    The two URLs are both real and both checked — by
+    ``test_iso_presence`` and ``test_iso_checksums`` respectively.
+    """
+    u = RepoURL.from_config(
+        source="beta", version="10.3", arch="aarch64", repo="BaseOS"
+    )
+    assert u.public_iso_dir() == (
+        "https://repo.almalinux.org/almalinux/10.3-beta/isos/aarch64"
+    )
+    assert u.iso_dir() == "https://vault.almalinux.org/10.3-beta/isos/aarch64"
+
+
+def test_url_builder_public_iso_dir_raises_for_sources_without_public_isos():
+    """pungi serves media from its own compose host and pulp ships none,
+    so returning a repo.almalinux.org URL for either would be a path
+    that 404s by construction — raise instead.
+    """
+    for src, ver in [("pungi", "10"), ("pulp", "10.2")]:
+        u = RepoURL.from_config(
+            source=src, version=ver, arch="x86_64", repo="BaseOS"
+        )
+        with pytest.raises(ValueError, match="publishes no ISOs"):
+            u.public_iso_dir()
+
+
+def test_url_builder_public_iso_dir_has_no_trailing_slash():
+    """Callers append ``"/" + filename``; a trailing slash here would
+    produce a double slash in every ISO URL in the report.
+    """
+    for src, ver in [("stable", "10.2"), ("beta", "10.3")]:
+        u = RepoURL.from_config(
+            source=src, version=ver, arch="x86_64", repo="BaseOS"
+        )
+        assert not u.public_iso_dir().endswith("/")
+        assert "//" not in u.public_iso_dir().replace("https://", "")
+
+
 def test_url_builder_kitten_ignored_for_non_pungi_sources():
     # kitten=True for stable should be silently ignored — kitten only
     # makes sense for the pungi result_dir.
