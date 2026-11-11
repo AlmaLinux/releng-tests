@@ -37,6 +37,23 @@ include = ["post_check*"]
 line-length = 100
 target-version = "py312"
 
+# Pin the rule set explicitly instead of inheriting ruff's default.
+# The default is not stable across releases: 0.11 selected E4/E7/E9/F,
+# 0.16 widened it, and because the dev extra only asks for `ruff>=0.6`
+# the gate's strictness silently became a function of whatever pip
+# happened to resolve — `make lint` passed on one machine and reported
+# 60 findings on another, against identical source. Naming the rules
+# here makes the result identical on every ruff that knows them.
+#
+# This is deliberately the set the codebase already satisfies, so the
+# gate starts green and stays meaningful. Widening it is a separate,
+# reviewable change: the extra rules in 0.16's default flag 60 places
+# (mostly BLE001 blind-except, I001 import order, PLW1510 subprocess
+# `check=`), several of which need a judgement call rather than an
+# autofix.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 # `rpmfile`, `defusedxml`, and `python-gnupg` ship no PEP-561 marker and
 # no third-party stubs on PyPI. Without these overrides mypy fails the
 # import on every run and drowns the real diagnostics in noise.

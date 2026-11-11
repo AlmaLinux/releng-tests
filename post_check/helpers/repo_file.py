@@ -37,10 +37,17 @@ def parse(text: str) -> list[RepoSection]:
     out: list[RepoSection] = []
     for section_id in cp.sections():
         s = cp[section_id]
+        # ``SectionProxy.get`` is typed ``str | None`` in typeshed even
+        # when a non-None fallback is passed, so ``get("name", …)``
+        # would not narrow to ``str``. Branch explicitly instead of
+        # asserting: this keeps an empty ``name=`` as the empty string
+        # (what configparser returns) rather than silently promoting it
+        # to the section id, which ``or`` would do.
+        raw_name = s.get("name")
         out.append(
             RepoSection(
                 section_id=section_id,
-                name=s.get("name", section_id),
+                name=section_id if raw_name is None else raw_name,
                 baseurl=s.get("baseurl"),
                 metalink=s.get("metalink"),
                 mirrorlist=s.get("mirrorlist"),

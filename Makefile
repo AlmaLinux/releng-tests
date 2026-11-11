@@ -20,6 +20,16 @@ ALMA_ARCHES ?= x86_64,aarch64,s390x,ppc64le
 # This means ``make test-release`` works without ``source .venv/bin/activate`` first.
 PYTEST ?= $(shell test -x .venv/bin/pytest && echo .venv/bin/pytest || echo pytest)
 
+# Same rule for the lint tools. ``make lint`` used to call them bare,
+# so without an activated venv ruff resolved to whatever was on PATH
+# (a different version than the project's, with a different default
+# rule set) and mypy usually resolved to nothing at all — the target
+# died on ``mypy: No such file or directory`` after ruff had already
+# printed "All checks passed", which reads like a ruff success rather
+# than a lint failure.
+RUFF  ?= $(shell test -x .venv/bin/ruff  && echo .venv/bin/ruff  || echo ruff)
+MYPY  ?= $(shell test -x .venv/bin/mypy  && echo .venv/bin/mypy  || echo mypy)
+
 export ALMA_SOURCE ALMA_VERSION ALMA_ARCHES ALMA_REPOS PYTEST
 
 # Bare ``make`` (no target) shows help — friendlier than running the
@@ -198,8 +208,8 @@ test-k-%: _require-vars
 	./scripts/run-local.sh -k "$*"
 
 lint:
-	ruff check .
-	mypy post_check tests
+	$(RUFF) check .
+	$(MYPY) post_check tests
 
 setup-qemu:
 	./scripts/setup-qemu.sh

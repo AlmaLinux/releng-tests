@@ -1,0 +1,69 @@
+name: CI
+
+# The repo's own gate, as opposed to release-tests.yml which validates
+# an AlmaLinux release. Everything here is offline and fast (tests/internal
+# is contractually forbidden from touching the network or ALMA_* vars),
+# so it is cheap enough to run on every push rather than on demand.
+#
+# Until this existed neither ruff nor mypy ran in CI at all, which is how
+# a mypy error in post_check/helpers/repo_file.py survived in main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only: this workflow builds nothing and publishes nothing.
+permissions:
+  contents: read
+
+# A force-push or a quick follow-up commit makes the in-flight run
+# pointless — cancel it instead of paying for a result nobody reads.
+# Keyed per ref so main and each PR are independent.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # Matches `requires-python` and ruff's `target-version`. The
+          # suite also runs on 3.14, but the lint result is what we
+          # gate on and it must be reproducible, so pin one version.
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .[dev]
+
+      # ruff + mypy. The rule set is pinned in pyproject.toml rather
+      # than inherited from ruff's default, so this is the same verdict
+      # a developer gets from `make lint` locally.
+      - name: Lint
+        run: make lint
+
+  internal-tests:
+    name: Internal tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .[dev]
+
+      # post-check's tests for post-check itself: helpers, parsers, and
+      # the suite-level contracts (every test asserts something, markers
+      # don't lie, the workflows stay pinned). Offline by construction.
+      - name: Run internal tests
+        run: make test-internal
