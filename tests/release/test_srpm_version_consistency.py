@@ -25,6 +25,22 @@ property and must hold regardless of which subset the operator passed
 via ``ALMA_ARCHES`` / ``ALMA_REPOS`` — otherwise narrowing the matrix
 would silently turn the check into a no-op.
 
+``ALMA_SOURCE=pulp`` is skipped outright. The invariant only holds for
+a repository that has been *published* — one where ``createrepo`` kept
+the latest build of each SRPM and dropped the rest. pulp points at the
+layered internal-beta on ``build.almalinux.org`` (``…-dr/``), which is
+a build repository: it accumulates every build produced during the
+beta cycle and never prunes, so a package rebuilt three times is
+present three times by design. Measured on the first pulp run of this
+test (runs 43037733636 / 43037788126): 75 of 312 source packages on
+AL9 and 88 of 373 on AL10 carried more than one build, and in every
+single case the older build was retained *whole* — the complete
+subpackage set, not the partial leftover this test exists to catch.
+Reporting that as drift would bury a real split-brain in ~80 lines of
+by-design noise on every arch. Same reasoning as the ``devel``
+exclusion below; the difference is only that pulp's staging layer is
+selected by source rather than by repo name.
+
 Modular packages (``.module`` in release) are excluded. Module streams
 have their own per-arch / per-stream lifecycle and routinely carry
 multiple co-existing builds in a single repodata; counting them as a
@@ -65,7 +81,7 @@ import requests
 from post_check.config import arch_supports_major, load_architectures, load_sources
 from post_check.helpers import http, repodata
 from post_check.helpers.rpm_evr import evr_cmp
-from post_check.helpers.url_builder import RepoURL, pulp_internal_beta_repo_base
+from post_check.helpers.url_builder import RepoURL
 
 pytestmark = [pytest.mark.online, pytest.mark.release]
 
@@ -248,9 +264,7 @@ def _collect_arch_packages_parallel(
     Parallelism is per (arch, repo) — the actual unit of network I/O —
     so a slow arch's biggest repo doesn't gate the rest. Total
     wall-clock is bounded by the slowest single cell rather than the
-    sum of all of them. On ``pulp`` the named repo set collapses to
-    one flat per-arch URL — we only schedule one cell per arch in
-    that case, and ``repos`` is ignored.
+    sum of all of them.
 
     The :class:`requests.Session` returned by ``http.session()`` (a
     ``requests_cache.CachedSession`` wrapping ``requests.Session``) is
@@ -265,9 +279,6 @@ def _collect_arch_packages_parallel(
     # failure surfaces against the right arch.
     tasks: list[tuple[str, str]] = []  # (arch, repo_base)
     for arch in arches:
-        if source == "pulp":
-            tasks.append((arch, pulp_internal_beta_repo_base(version=version, arch=arch)))
-            continue
         for repo in repos:
             base = RepoURL.from_config(
                 source=source, version=version, arch=arch, repo=repo
@@ -295,15 +306,20 @@ def test_srpm_versions_consistent_within_each_arch(runtime_config, report_detail
     binary RPMs were left behind after the SRPM was rebuilt, or the
     rebuild was pushed for some subpackages but not others.
     """
+    # pulp's internal-beta is a build repository, not a published one:
+    # it keeps every build of the beta cycle, so "one EVR per SRPM" is
+    # false there by construction rather than by breakage. See the
+    # module docstring for the measured numbers.
+    if runtime_config.source == "pulp":
+        pytest.skip(
+            "source=pulp: the internal-beta layer on build.almalinux.org "
+            "accumulates every build of the beta cycle and never prunes, "
+            "so multiple EVRs per SRPM are by design, not drift"
+        )
+
     major = runtime_config.version.split(".")[0]
     arches = _all_arches(major=major)
-    # pulp's internal-beta is a flat per-arch repo (no BaseOS / AppStream
-    # split) — the per-component repo list collapses to one URL. For
-    # every other source we walk the full repo set.
-    if runtime_config.source == "pulp":
-        repos: list[str] = []
-    else:
-        repos = list(load_sources()[runtime_config.source]["repos"])
+    repos = list(load_sources()[runtime_config.source]["repos"])
 
     s = http.session()
     arch_to_packages = _collect_arch_packages_parallel(

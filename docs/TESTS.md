@@ -249,8 +249,15 @@ also surfaces in main.
 Always iterates the full architecture matrix from
 `config/architectures.yaml` AND the full repo set of the source —
 consistency is a property of the release, not of `ALMA_ARCHES` /
-`ALMA_REPOS`. On `pulp`, the named repo set collapses to the flat
-per-arch internal-beta URL.
+`ALMA_REPOS`.
+
+Skipped entirely for `ALMA_SOURCE=pulp`. The invariant describes a
+*published* repository, where `createrepo` kept only the latest build
+of each SRPM. pulp's layered internal-beta on `build.almalinux.org`
+is a build repository that accumulates every build of the beta cycle
+and never prunes, so repeated EVRs there are by design — measured at
+75/312 source packages on AL9 and 88/373 on AL10, with the older
+build retained whole in every case.
 
 | Test | What it checks |
 |---|---|
