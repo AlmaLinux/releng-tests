@@ -10,6 +10,8 @@ never requests privileges.
 
 from __future__ import annotations
 
+import pathlib
+import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -33,6 +35,60 @@ class DockerResult:
 def docker_available() -> bool:
     """``True`` if ``docker`` is in ``PATH``."""
     return shutil.which("docker") is not None
+
+
+# ``arch`` -> the qemu-user handler ``binfmt_misc`` registers for it.
+# Only the non-native entries matter; a native arch never needs one.
+_QEMU_BINFMT_NAME = {
+    "aarch64": "qemu-aarch64",
+    "s390x": "qemu-s390x",
+    "ppc64le": "qemu-ppc64le",
+    "i686": "qemu-i386",
+    "x86_64": "qemu-x86_64",
+    "x86_64_v2": "qemu-x86_64",
+}
+
+# Host machine names that mean "this arch runs natively, no emulation".
+_NATIVE_ALIASES = {
+    "x86_64": {"x86_64", "amd64"},
+    "x86_64_v2": {"x86_64", "amd64"},
+    "aarch64": {"aarch64", "arm64"},
+    "s390x": {"s390x"},
+    "ppc64le": {"ppc64le"},
+    "i686": {"i686", "i386", "x86_64", "amd64"},
+}
+
+
+def arch_emulation_available(arch: str) -> bool:
+    """``True`` if this host can actually *execute* ``arch`` containers.
+
+    :func:`docker_available` only answers whether the docker CLI
+    exists, which is not the same question. A host can have a perfectly
+    working docker and still be unable to run a foreign-arch image:
+    without a qemu ``binfmt_misc`` handler registered — what
+    ``scripts/setup-qemu.sh`` and ``docker/setup-qemu-action`` install —
+    ``docker run --platform=linux/s390x`` fails with exit 255 and an
+    "exec format error". GitHub's stock ubuntu runners are exactly that
+    shape.
+
+    Callers need the distinction so a missing emulation dependency
+    skips (with a reason naming it) instead of failing, which would
+    otherwise read as "run_in_arch is broken".
+
+    Deliberately cheap and offline: no image pull, no container start.
+    A native arch is always runnable. Off Linux there is no host
+    ``binfmt_misc`` to inspect because emulation lives inside the
+    Docker Desktop VM, which ships qemu — so we assume it is there and
+    let the test itself be the backstop.
+    """
+    if platform.machine() in _NATIVE_ALIASES.get(arch, set()):
+        return True
+    if platform.system() != "Linux":
+        return True
+    handler = _QEMU_BINFMT_NAME.get(arch)
+    if handler is None:
+        return False
+    return pathlib.Path("/proc/sys/fs/binfmt_misc", handler).exists()
 
 
 def require_docker_or_fail() -> None:

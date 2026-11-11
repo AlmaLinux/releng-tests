@@ -64,6 +64,15 @@ jobs:
 
       # post-check's tests for post-check itself: helpers, parsers, and
       # the suite-level contracts (every test asserts something, markers
-      # don't lie, the workflows stay pinned). Offline by construction.
+      # don't lie, the workflows stay pinned).
+      #
+      # `requires_docker` is excluded deliberately. Those few tests in
+      # tests/internal start real containers under qemu, which needs a
+      # binfmt registration step (scripts/setup-qemu.sh, or
+      # docker/setup-qemu-action as release-tests.yml does) and pulls
+      # almalinux:10 over the network. Running them here would make the
+      # repo's own gate neither offline nor fast, and CLAUDE.md puts
+      # tests/internal at "Network: no, Docker: no". They stay covered
+      # by a local `make test-internal` on a qemu-registered host.
       - name: Run internal tests
-        run: make test-internal
+        run: make test-internal PYTEST_ARGS='-m "not requires_docker"'

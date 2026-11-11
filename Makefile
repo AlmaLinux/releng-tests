@@ -165,7 +165,7 @@ test-release-arch-%: _require-vars
 # contract tests that check our own tests don't lie. Offline, no
 # ALMA_* env vars needed.
 test-internal:
-	$(PYTEST) tests/internal
+	$(PYTEST) tests/internal $(PYTEST_ARGS)
 
 # Run a single test file by name (without the .py extension).
 # Searches tests/release/, then tests/internal/.

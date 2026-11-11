@@ -20,6 +20,7 @@ import pytest
 
 from post_check.helpers import docker as docker_helper
 from post_check.helpers.docker import (
+    arch_emulation_available,
     build_command,
     docker_available,
     image_for,
@@ -149,6 +150,70 @@ def test_docker_runner_constructs_i686_platform_flag() -> None:
     assert "--platform=linux/386" in cmd
 
 
+# --- emulation probe (offline: no docker, no containers) -----------------
+#
+# These exist because the distinction they encode was missing and cost
+# a red CI run: tests/internal's docker integration cases guarded only
+# on `docker_available()`, so on a host with docker but no qemu binfmt
+# (GitHub's stock ubuntu runner) they failed with exit 255 instead of
+# skipping.
+
+
+def _fake_host(monkeypatch, *, system: str, machine: str, registered=()) -> None:
+    """Pretend to be a given host with a given set of binfmt handlers."""
+    monkeypatch.setattr(docker_helper.platform, "system", lambda: system)
+    monkeypatch.setattr(docker_helper.platform, "machine", lambda: machine)
+    real_exists = docker_helper.pathlib.Path.exists
+
+    def fake_exists(self) -> bool:
+        if "binfmt_misc" in str(self):
+            return self.name in registered
+        return real_exists(self)
+
+    monkeypatch.setattr(docker_helper.pathlib.Path, "exists", fake_exists)
+
+
+def test_emulation_available_for_native_arch_without_any_binfmt(monkeypatch) -> None:
+    """The host's own arch never needs a qemu handler."""
+    _fake_host(monkeypatch, system="Linux", machine="x86_64")
+    assert arch_emulation_available("x86_64") is True
+
+
+def test_emulation_unavailable_for_foreign_arch_without_binfmt(monkeypatch) -> None:
+    """A stock GitHub ubuntu runner: docker present, no qemu registered.
+
+    This is the exact shape that used to fail the suite rather than
+    skip it.
+    """
+    _fake_host(monkeypatch, system="Linux", machine="x86_64")
+    for arch in ("aarch64", "s390x", "ppc64le"):
+        assert arch_emulation_available(arch) is False, arch
+
+
+def test_emulation_available_for_foreign_arch_once_binfmt_registered(
+    monkeypatch,
+) -> None:
+    """After ``make setup-qemu`` the same arches become runnable."""
+    _fake_host(
+        monkeypatch,
+        system="Linux",
+        machine="x86_64",
+        registered=("qemu-aarch64", "qemu-s390x", "qemu-ppc64le"),
+    )
+    for arch in ("aarch64", "s390x", "ppc64le"):
+        assert arch_emulation_available(arch) is True, arch
+
+
+def test_emulation_assumed_available_off_linux(monkeypatch) -> None:
+    """Docker Desktop keeps qemu inside its VM, not in the host's /proc.
+
+    There is nothing to inspect, so the probe must not report False and
+    skip every integration test on a developer's Mac.
+    """
+    _fake_host(monkeypatch, system="Darwin", machine="arm64")
+    assert arch_emulation_available("s390x") is True
+
+
 # --- integration: requires docker + qemu binfmt --------------------------
 
 
@@ -157,6 +222,15 @@ def test_docker_runner_constructs_i686_platform_flag() -> None:
 def test_run_in_arch_executes_uname_m(arch: str) -> None:
     if not docker_available():
         pytest.skip("docker not available")
+    # Having docker is not the same as being able to execute a foreign
+    # arch. Without a qemu binfmt handler this call dies with exit 255
+    # ("exec format error"), which is a missing dependency rather than
+    # a broken run_in_arch — name it so the report says which.
+    if not arch_emulation_available(arch):
+        pytest.skip(
+            f"{arch}: qemu binfmt_misc handler not registered — run "
+            f"`make setup-qemu` (or docker/setup-qemu-action in CI)"
+        )
     res = run_in_arch(arch=arch, image="almalinux:10", cmd=["uname", "-m"], timeout=120)
     assert res.stdout.strip() == arch
 
