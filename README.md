@@ -100,7 +100,7 @@ follow the link for the full assertion list.
 | 9 | `almalinux-release` / `almalinux-repos` have the same N-E-V-R on every arch (arch and binary checksum intentionally differ — these packages are built per-arch on AL10) | [`tests/release/test_release_parity.py`](tests/release/test_release_parity.py) |
 | 10 | SRPM version consistency within each arch (no split-brain subpackages) | [`tests/release/test_srpm_version_consistency.py`](tests/release/test_srpm_version_consistency.py) |
 | 11 | ISOs published and fully uploaded under `isos/<arch>/` on the public mirror — stable/beta only | [`tests/release/test_iso_presence.py`](tests/release/test_iso_presence.py) |
-| 12 | A NEVRA carries the same bytes in the release under test and in its reference source (stable↔beta, beta↔pungi, pulp↔pungi, pungi↔previous stable) — no rebuild or stale copy under one package identity | [`tests/release/test_cross_source_parity.py`](tests/release/test_cross_source_parity.py) |
+| 12 | A NEVRA carries the same bytes across sources — between adjacent pipeline stages (stable↔beta, beta↔pungi, pulp↔pungi) and between every pre-release stage (beta, pungi, pulp) and the current GA — no rebuild or stale copy under one package identity | [`tests/release/test_cross_source_parity.py`](tests/release/test_cross_source_parity.py) |
 
 → **Detailed catalogue:** [`docs/TESTS.md`](docs/TESTS.md).
 → **Architecture × version matrix:** [`docs/ARCH_MATRIX.md`](docs/ARCH_MATRIX.md).

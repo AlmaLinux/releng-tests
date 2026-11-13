@@ -108,26 +108,36 @@ re-signed without a release bump, or a stale copy left on one mirror,
 actually shows up — inside either release on its own the file is
 perfectly self-consistent.
 
-Reference per source, chosen by measured overlap (shared NEVRAs on
-x86_64):
+Two references, one test each, because they answer different questions
+(shared NEVRAs measured on x86_64, 10.3 cycle):
 
-| Source under test | Reference | Why |
+| Source under test | Adjacent pipeline stage (same version) | Current GA (`stable X.(Y-1)`) |
 |---|---|---|
-| `stable X.Y` | `beta X.Y` | The previous stable minor is pruned from `repo.almalinux.org` once superseded (10.1 → 404), so it cannot be the reference; vault keeps every past beta, and "GA ships what beta shipped" is the invariant worth asserting. |
-| `beta X.Y` | `pungi` (same release) | 4354 shared NEVRAs on 10.3. |
-| `pungi X.Y` | `stable X.(Y-1)` | For a compose the previous minor is the *current* GA, still served; 3956 shared on 10.3. Skips when there is no in-major predecessor (`x.0`, or a major-only version). |
-| `pulp X.Y` | `pungi` (same release) | The internal-beta carries only fresh builds and shares **zero** NEVRAs with the previous GA; 1744 shared with the compose. |
+| `stable X.Y` | `beta X.Y` — 619 shared (BaseOS) | skipped: a superseded stable minor is pruned from `repo.almalinux.org` (10.1 → 404); the stable run *is* the GA |
+| `beta X.Y` | `pungi X.Y` — 4354 shared | 5073 shared |
+| `pungi X.Y` | skipped: its builds are checked from pulp's side, and beta does not reliably exist yet while a compose is validated | 5045 shared |
+| `pulp X.Y` | `pungi X.Y` — 1744 shared | **0 shared**, and that is the expected pass: the build repo carries only fresh builds |
 
 Full architecture matrix and full repo set on both sides, regardless of
 `ALMA_ARCHES` / `ALMA_REPOS`. Per-arch counts of compared NEVRAs are
-reported, and a run where the two sides share nothing at all **fails**
-instead of passing — a reference that stopped overlapping (compose
-rolled over, mirror pruned) would otherwise turn the check into a silent
-no-op.
+reported for both tests. The two guard against a silent no-op
+differently:
+
+* the adjacent-stage test **fails** when the two sides share nothing at
+  all — adjacent stages overlap by thousands of NEVRAs, so zero means
+  the reference went stale (compose rolled over, mirror pruned);
+* the GA test accepts zero overlap (pulp) but **skips** when the GA
+  itself returns nothing, i.e. the previous minor was already pruned
+  because this release has since shipped. It also skips on `x.0`, which
+  has no in-major GA before it.
 
 | Test | What it checks |
 |---|---|
-| `test_nevra_content_matches_reference_source` | Every NEVRA present in both the release under test and its reference has the same sha256 on every arch. On failure, the report lists each conflicting NEVRA with both checksums and which side carries which. |
+| `test_nevra_content_matches_adjacent_stage` | Every NEVRA present in both the release under test and its adjacent pipeline stage has the same sha256 on every arch — nothing was rebuilt between hand-offs without a release bump. |
+| `test_no_ga_nevra_rebuilt_with_different_content` | For beta, pungi and pulp: every NEVRA the current GA already ships, wherever it reappears in the new release, is the very same file. A mismatch means a GA package was rebuilt for the new minor without a release bump, so `dnf` on a GA system never picks the rebuild up. |
+
+On failure, both report each conflicting NEVRA with both checksums and
+which side carries which.
 
 ---
 
@@ -364,7 +374,7 @@ major-only versions the test is skipped.
 | 9. `almalinux-release/repos` with the same N-E-V-R on every arch | `tests/release/test_release_parity.py` |
 | 10. SRPM version consistency within each arch (no split-brain on subpackages) | `tests/release/test_srpm_version_consistency.py` |
 | 11. ISOs published and complete on the public mirror (stable/beta) | `tests/release/test_iso_presence.py` |
-| 12. Same NEVRA, same bytes across pipeline stages (cross-source) | `tests/release/test_cross_source_parity.py` |
+| 12. Same NEVRA, same bytes across pipeline stages and against the current GA (cross-source) | `tests/release/test_cross_source_parity.py` |
 
 ## How many tests run in each configuration
 

@@ -1607,18 +1607,29 @@ def test_cross_source_parity_ignores_arch_missing_from_reference():
     assert compute_nevra_checksum_conflicts(target, {}) == []
 
 
-def test_cross_source_parity_has_a_reference_for_every_source():
-    """Every configured source must map to a reference that is itself a
-    configured source. Adding a fifth source without a reference would
-    turn the online test into a KeyError instead of a verdict."""
+def test_cross_source_parity_checks_every_source_somewhere():
+    """Every configured source must be covered by at least one of the two
+    online tests. A fifth source with no entry in either would be skipped
+    by both — a silent hole in the report instead of a verdict."""
     from post_check.config import load_sources
-    from tests.release.test_cross_source_parity import _REFERENCES
+    from tests.release.test_cross_source_parity import (
+        _ADJACENT_STAGE,
+        _GA_CHECKED_SOURCES,
+    )
 
     sources = set(load_sources())
-    assert set(_REFERENCES) == sources
-    for src, (ref_source, rule) in _REFERENCES.items():
-        assert ref_source in sources, f"{src} -> unknown reference {ref_source}"
-        assert ref_source != src or rule != "same", (
-            f"{src} compared against itself at the same version asserts nothing"
-        )
-        assert rule in ("same", "previous_minor"), f"{src}: unknown rule {rule}"
+    assert set(_ADJACENT_STAGE) | _GA_CHECKED_SOURCES == sources
+    for src, ref in _ADJACENT_STAGE.items():
+        assert ref in sources, f"{src} -> unknown adjacent stage {ref}"
+        assert ref != src, f"{src} compared against itself asserts nothing"
+
+
+def test_cross_source_parity_checks_every_pre_ga_stage_against_the_ga():
+    """The rule behind ``_GA_CHECKED_SOURCES``: every source except stable
+    is a pre-release stage and must not rebuild a GA package under its
+    NEVRA. stable stays out — its previous minor is pruned from the
+    mirror, so that comparison would only ever skip."""
+    from post_check.config import load_sources
+    from tests.release.test_cross_source_parity import _GA_CHECKED_SOURCES
+
+    assert _GA_CHECKED_SOURCES == set(load_sources()) - {"stable"}
