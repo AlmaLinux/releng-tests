@@ -28,6 +28,7 @@ def test_readme_has_screenshot_checklist_mapping():
         "test_repomd_signature.py",
         "test_noarch_parity.py",
         "test_release_parity.py",
+        "test_cross_source_parity.py",
     ]
     for fname in expected:
         assert fname in text, f"README does not mention {fname}"

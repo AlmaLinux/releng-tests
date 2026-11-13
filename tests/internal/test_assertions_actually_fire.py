@@ -1546,3 +1546,79 @@ def test_srpm_consistency_handles_hyphenated_package_names():
     )
     # Malformed → None (no two trailing hyphen-separated chunks).
     assert _parse_srpm("foo.src.rpm") is None
+
+
+# ============================================================ cross-source NEVRA parity
+# Feed ``compute_nevra_checksum_conflicts`` synthetic {arch: {nevra: sha}}
+# maps. The online test exists to catch two different files circulating
+# under one NEVRA (found live: tmux in beta 10.3 vs the 10.3 compose), so
+# the meta-tests prove the check fires on exactly that and stays silent
+# on what is legal between two releases — a version bump, a package that
+# only one side carries, an arch only one side publishes.
+
+
+def test_cross_source_parity_identical_shared_nevras_are_silent():
+    """Baseline: every shared NEVRA carries the same bytes → no failures."""
+    from tests.release.test_cross_source_parity import compute_nevra_checksum_conflicts
+
+    side = {"x86_64": {"foo-1.0-1.el10.x86_64": "a" * 64}}
+    assert compute_nevra_checksum_conflicts(side, dict(side)) == []
+
+
+def test_cross_source_parity_fires_on_same_nevra_different_bytes():
+    """The defect itself: one NEVRA, two checksums. The rendered block
+    must name the arch, the NEVRA, and both sides with their labels —
+    that is what the operator needs to find the stale copy."""
+    from tests.release.test_cross_source_parity import compute_nevra_checksum_conflicts
+
+    nevra = "tmux-3.3a-14.el10.x86_64"
+    failures = compute_nevra_checksum_conflicts(
+        {"x86_64": {nevra: "a" * 64}},
+        {"x86_64": {nevra: "b" * 64}},
+        target_label="beta 10.3",
+        reference_label="pungi 10.3",
+    )
+    assert failures, "same NEVRA with different sha256 did not fire"
+    text = "\n".join(failures)
+    assert "[x86_64] 1 NEVRA(s)" in text
+    assert nevra in text
+    assert "beta 10.3" in text and "a" * 64 in text
+    assert "pungi 10.3" in text and "b" * 64 in text
+
+
+def test_cross_source_parity_ignores_nevras_only_one_side_has():
+    """A version bump between releases is two *different* NEVRAs, not a
+    conflict — the whole point of a release is that packages move on."""
+    from tests.release.test_cross_source_parity import compute_nevra_checksum_conflicts
+
+    target = {"x86_64": {"foo-1.1-1.el10.x86_64": "a" * 64}}
+    reference = {"x86_64": {"foo-1.0-1.el10.x86_64": "b" * 64}}
+    assert compute_nevra_checksum_conflicts(target, reference) == []
+
+
+def test_cross_source_parity_ignores_arch_missing_from_reference():
+    """An arch the reference does not publish (x86_64_v2 on AL9, an arch
+    not yet pushed to a compose) has nothing to compare against — that
+    is a coverage gap reported through the shared-NEVRA counts, not a
+    content conflict."""
+    from tests.release.test_cross_source_parity import compute_nevra_checksum_conflicts
+
+    target = {"x86_64_v2": {"foo-1.0-1.el10.x86_64_v2": "a" * 64}}
+    assert compute_nevra_checksum_conflicts(target, {}) == []
+
+
+def test_cross_source_parity_has_a_reference_for_every_source():
+    """Every configured source must map to a reference that is itself a
+    configured source. Adding a fifth source without a reference would
+    turn the online test into a KeyError instead of a verdict."""
+    from post_check.config import load_sources
+    from tests.release.test_cross_source_parity import _REFERENCES
+
+    sources = set(load_sources())
+    assert set(_REFERENCES) == sources
+    for src, (ref_source, rule) in _REFERENCES.items():
+        assert ref_source in sources, f"{src} -> unknown reference {ref_source}"
+        assert ref_source != src or rule != "same", (
+            f"{src} compared against itself at the same version asserts nothing"
+        )
+        assert rule in ("same", "previous_minor"), f"{src}: unknown rule {rule}"

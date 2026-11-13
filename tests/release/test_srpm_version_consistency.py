@@ -73,15 +73,13 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
-import requests
 
 from post_check.config import arch_supports_major, load_architectures, load_sources
 from post_check.helpers import http, repodata
+from post_check.helpers.repo_scan import collect_packages_by_arch
 from post_check.helpers.rpm_evr import evr_cmp
-from post_check.helpers.url_builder import RepoURL
 
 pytestmark = [pytest.mark.online, pytest.mark.release]
 
@@ -219,83 +217,6 @@ def _all_arches(major: str | None = None) -> tuple[str, ...]:
     return tuple(arches)
 
 
-# Per (arch, repo) we fetch one ``primary.xml`` and stream-parse every
-# binary RPM in it. With the full matrix that's ~36-50 fetches per run,
-# and each ``primary.xml`` carries thousands of packages — running them
-# sequentially blows past the wall-clock budget. The original per-arch
-# scripts under ``releng-almalinux/tools/`` solved this with a
-# ``ThreadPoolExecutor`` of 4 workers; we use the same approach. 8 is
-# a comfortable upper bound for the AlmaLinux mirror network — higher
-# and we start seeing connection-reset noise from the CDN.
-_FETCH_WORKERS = 8
-
-
-def _fetch_one_cell(
-    session: requests.Session,
-    repo_base: str,
-) -> list[repodata.Package]:
-    """Fetch + parse one ``(arch, repo)`` cell's ``primary.xml``.
-
-    Returns ``[]`` on 403/404 — a missing repo (RT/NFV on non-x86,
-    ResilientStorage on AL10, an arch not yet pushed to the
-    internal-beta) is not a consistency violation. Other HTTP errors
-    bubble up: those are infrastructure problems, not "release
-    missing", and the operator wants the raw exception (same contract
-    as :func:`tests.release.test_release_parity._find_pkg`).
-    """
-    try:
-        primary = repodata.find_primary_xml_url(session, repo_base)
-    except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code in (403, 404):
-            return []
-        raise
-    return list(repodata.iter_packages(session, primary))
-
-
-def _collect_arch_packages_parallel(
-    session: requests.Session,
-    source: str,
-    version: str,
-    arches: Iterable[str],
-    repos: Iterable[str],
-) -> dict[str, list[repodata.Package]]:
-    """Fetch every ``(arch, repo)`` cell in parallel; aggregate per arch.
-
-    Parallelism is per (arch, repo) — the actual unit of network I/O —
-    so a slow arch's biggest repo doesn't gate the rest. Total
-    wall-clock is bounded by the slowest single cell rather than the
-    sum of all of them.
-
-    The :class:`requests.Session` returned by ``http.session()`` (a
-    ``requests_cache.CachedSession`` wrapping ``requests.Session``) is
-    safe to share across threads — each ``get()`` uses its own
-    underlying urllib3 connection from the pool.
-    """
-    arches = list(arches)
-    arch_to_packages: dict[str, list[repodata.Package]] = {a: [] for a in arches}
-
-    # Pre-resolve all URLs synchronously (cheap, no I/O — just config
-    # lookups). The futures dict is keyed by arch so a single fetch
-    # failure surfaces against the right arch.
-    tasks: list[tuple[str, str]] = []  # (arch, repo_base)
-    for arch in arches:
-        for repo in repos:
-            base = RepoURL.from_config(
-                source=source, version=version, arch=arch, repo=repo
-            ).repo_base()
-            tasks.append((arch, base))
-
-    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
-        futures = {
-            pool.submit(_fetch_one_cell, session, base): arch
-            for arch, base in tasks
-        }
-        for fut in as_completed(futures):
-            arch = futures[fut]
-            arch_to_packages[arch].extend(fut.result())
-    return arch_to_packages
-
-
 def test_srpm_versions_consistent_within_each_arch(runtime_config, report_detail):
     """Each arch must reference exactly one version of every source RPM.
 
@@ -322,8 +243,12 @@ def test_srpm_versions_consistent_within_each_arch(runtime_config, report_detail
     repos = list(load_sources()[runtime_config.source]["repos"])
 
     s = http.session()
-    arch_to_packages = _collect_arch_packages_parallel(
-        s, runtime_config.source, runtime_config.version, arches, repos
+    arch_to_packages = collect_packages_by_arch(
+        s,
+        source=runtime_config.source,
+        version=runtime_config.version,
+        arches=arches,
+        repos=repos,
     )
     # Surface the per-arch package count under the test bullet so an
     # operator reading a green ✅ can still see that the test actually
